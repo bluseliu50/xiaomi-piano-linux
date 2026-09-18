@@ -1,0 +1,4 @@
+[submodule "linux-piano"]
+	path = linux-piano
+	url = https://github.com/bluseliu50/linux-piano.git
+	branch = piano-7.2.6

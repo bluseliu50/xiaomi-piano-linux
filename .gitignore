@@ -1,0 +1,63 @@
+# =============================================================
+# linux-xiaomi-piano umbrella repository .gitignore
+# This repo tracks only documentation (docs/), scripts (scripts/)
+# and umbrella-level configuration.
+# Component repos are nested standalone git repos; remove their
+# ignore lines below one by one as they become submodules.
+# =============================================================
+
+# ---------- Reference area & local data (never committed) ----------
+/refer/
+# Device extractions / backups / proprietary firmware: irreplaceable, proprietary
+/local/
+# Build outputs: rebuildable at any time
+/out/
+
+# ---------- Component repos (standalone git repos, ignored until converted to submodules) ----------
+/debian-piano/
+/userspace/
+
+# ---------- Proprietary-binary safety net (blocks accidental adds; use `git add -f` plus a stated justification if ever needed) ----------
+*.mbn
+*.b[0-9][0-9]
+*.el1
+*.melf
+*.img
+*.deb
+*.rpm
+*.apk
+*.zip
+*.tar
+*.tar.*
+*.tgz
+*.fw
+*.bin
+*.ko
+
+# ---------- Secrets / credentials ----------
+.env
+.env.*
+*.env
+id_rsa*
+*.pem
+*.key
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---------- Editors / OS ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Patch leftovers ----------
+*.orig
+*.rej
