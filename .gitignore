@@ -14,7 +14,6 @@
 /out/
 
 # ---------- Component repos (standalone git repos, ignored until converted to submodules) ----------
-/debian-piano/
 /userspace/
 
 # ---------- Proprietary-binary safety net (blocks accidental adds; use `git add -f` plus a stated justification if ever needed) ----------
