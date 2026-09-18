@@ -140,6 +140,46 @@ component-repo commits and patch series).
     checkpatch clean) for eventual linux-arm/ml submission.
 - After any rebase or upstream sync, re-verify the build (dtb compile is the minimum bar).
 
+## Branch protection & development workflow
+
+Branch protection is **mandatory on every repository we own** (umbrella, linux-piano,
+debian-piano, userspace/*). Enable it right after each repo's bootstrap push
+(GitHub → Settings → Branches → Add rule). Agents never disable or weaken these rules.
+
+Protected branches: umbrella `main`; linux-piano `master` + `piano-*`; debian-piano
+`main`; userspace/* `main`.
+
+Uniform rule set:
+
+- Require a pull request before merging — no direct pushes to protected branches.
+- Required approvals: **0 while solo** (GitHub blocks self-approval; agents never
+  approve or merge — every merge is a human action). Raise to 1 when a second
+  maintainer joins.
+- Require conversation resolution; require status checks once the repo has CI (below).
+- **Block force pushes and deletions.** (`--force-with-lease` against a protected
+  branch is a bug, not a tool.) Exception: linux-piano `master` (vanilla mirror) may
+  be **fast-forwarded** directly to a new stable tag — still no force pushes.
+
+Workflow norms:
+
+1. All work lands via PR into the protected branch; treat protected branches as
+   read-only locally too. Bootstrap pushes happen before protection is enabled.
+2. Feature branches: `<label>/<topic>` (`piano/dts-v0`, `piano/panel-driver`,
+   `bp/dsi-v3`, `docs/bootimg-notes`); backport series merge as whole series.
+3. One logical change per PR; conventional-commit title; the description carries
+   what/why plus evidence (build log, dtb output, dmesg excerpt). Rebase first —
+   PRs must be conflict-free.
+4. Merge style: **rebase merge** (preserves individual commits and original
+   authorship — mandatory for kernel backports); squash only for trivial fixes.
+5. Emergency path (e.g., unblocking a bricked device): the user may push directly
+   to a protected branch after explicitly acknowledging the risk; log it in the
+   session status notes and follow up with a cleanup PR.
+6. Umbrella PRs that bump a submodule pointer must state the target commit and why.
+7. CI (required checks, introduced as workflows appear): linux-piano → build
+   `piano_defconfig` + `qcom/sm8750-xiaomi-piano.dtb` (minimum bar; checkpatch on
+   own commits later); debian-piano → workflow lint (yamllint/shellcheck) first;
+   umbrella → none (docs-only) for now; userspace/* → upstream CI where present.
+
 ## Component repo bootstrap
 
 - `linux-piano`: based on vanilla stable v7.2.6 (NOT on ianchb's tree). The GitHub repo
