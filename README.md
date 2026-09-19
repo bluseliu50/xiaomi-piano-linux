@@ -4,20 +4,6 @@ Mainline Linux for the **Xiaomi Pad 8 Pro** (codename **piano**, Qualcomm SM8750
 
 Goal: a self-built Debian system — mainline kernel, rootfs, boot images — with **MVP = graphical desktop + GPU driver + charging & power management**. Everything is built from our own repositories; no hand-assembled images.
 
-## Current status (implemented so far)
-
-| Component | State | Evidence |
-|---|---|---|
-| Kernel defconfig (`piano_defconfig`) | Done, PR open (linux-piano#1) — initramfs/devtmpfs/EXT4/UFS/USB-NCM/DWC3 + SM8750 PHY stack built-in (`=y`); `TYPEC`/`DRM` framework parents promoted for `PHY_QCOM_QMP_COMBO=y` | full `Image dtbs modules` build green (clang/lld 22.1.8), savedefconfig round-trip verified |
-| Kernel DTS v0 (`sm8750-xiaomi-piano.dts`) | Done, PR open (linux-piano#2) — UART7, UFS, USB DWC3 + QMP/eUSB2 PHYs, pmic-glink USB-C with WCD9395-USBSS SBU mux, full MTP regulator grid minus the PM8010-N die piano omits; no display/audio/WLAN/GPU/remoteproc nodes | DTB builds; `Image dtbs modules` green; `dtbs_check` clean after registering `xiaomi,piano` in `arm/qcom.yaml` |
-| debian-piano builder | Bootstrapped, CI green (`lint` + `build`, arm64 native runners) — two-phase rootfs builder (debootstrap minbase + in-chroot apt), debug initramfs (busybox + dropbear + configfs USB-NCM gadget, fixed test MACs), boot-image packer around vendored AOSP mkbootimg with an UNVERIFIED-parameter gate, firmware deb helper | CI run on `505264f`: initramfs + full firmware-less trixie/phosh rootfs + synthetic boot image round-trip, all passing |
-| Umbrella integration | PR open (#1: debian-piano submodule + `scripts/build-kernel.sh`); PR open (#2: this README) | `build-kernel.sh` full run: Image 41,601,536 B + piano DTB in 5m11s @ 32 threads |
-| P0-A offline ROM parse | In progress — `local/rom/ROM-MANIFEST` (108 files hashed, all four reference SHA-256 baselines match), `local/rom/partitions.txt` (150 program rows from rawprogram0–5 + 138 GPT definitions; LUN0 = super+userdata, LUN5 = modemst/fsg/persist; flash_all.sh static audit extracted), boot/vendor_boot/init_boot unpacked with official tools, dtbo table dumped (1 entry), vendor_boot DTB split into 8 blobs, all decompiled to `local/dtb-downstream/` | outputs under `local/rom/`, `out/rom-work/`, `local/dtb-downstream/` |
-| Kernel CI workflow (`piano-dtb`) | Pending the two kernel PR merges (its merge-ref needs `piano_defconfig`) | — |
-| P0-A super/firmware extraction | Pending | — |
-
-Nothing above involves a physical device; P0-B and later phases wait for hardware.
-
 ## How to build, run and test
 
 ### Kernel
