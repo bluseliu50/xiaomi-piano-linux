@@ -84,17 +84,32 @@ piano-tests          # menu: probe status, touch, display, evidence
 
 ## 6. Rebuild / customize
 
+One command from the workspace root (ties linux-piano + debian-piano +
+local/ together; refuses to build from any kernel branch other than
+`piano/test-bringup` and refuses a dirty kernel tree):
+
 ```
-cd debian-piano
-scripts/build-test-bootimg.sh \
+scripts/build-test-image.sh [--root-password 'x']      # '' = press-enter login
+                             [--authorized-keys ~/.ssh/id_ed25519.pub]
+                             [--jobs N] [--kernel-out DIR] [--output-dir DIR]
+```
+
+It builds the kernel into `linux-piano/out` (unless
+`--skip-kernel-build`), stages the arm64 userland on demand, then runs
+the debian-piano packer, which produces and round-trip-verifies the five
+image variants into `debian-piano/out/test-image/` (MANIFEST.txt lists
+hashes, parameters and the boot ladder).
+
+Internals (component repos, reusable on their own):
+
+```
+debian-piano/scripts/fetch-arm64-tools.sh      # static busybox + dropbear tree
+debian-piano/scripts/build-test-bootimg.sh \
     --kernel-dir ../linux-piano/out \
     --firmware-dir ../local/firmware \
-    --output-dir out/test-image \
-    [--authorized-keys ~/.ssh/id_ed25519.pub | --generate-access-key] \
-    [--root-password 'x']       # or '' for press-enter login
+    --output-dir out/test-image
 ```
 
 Kernel side: `linux-piano` branch `piano/test-bringup`
 (display pipeline + NT37801 panel + NT36532E SPI touch, panel-follower
-wired; build: `make ARCH=arm64 LLVM=1 O=out piano_defconfig
-&& make … Image dtbs modules`).
+wired).
