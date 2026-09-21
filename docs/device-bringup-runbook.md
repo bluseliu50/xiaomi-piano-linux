@@ -29,6 +29,11 @@ Findings from reviewing every branch/artifact that touches the device:
 - Unlocked bootloader (user's own action), battery > 50 %.
 - Slot A stock Android bootable; rescue fastboot ROM in `local/rom/`.
 - Host with `fastboot` (android-tools), SSH client, and the workspace.
+  - Verified on the bring-up host (2026-09-21): `fastboot` runs without
+    sudo from a local session — systemd's `70-uaccess.rules` tags ADB/
+    fastboot USB devices (interface classes ff4201/ff4203) `uaccess`, and
+    logind grants the seated user ACL access to the device node.
+    OpenSSH 10.5p1 client is ready.
 - Built image set: `debian-piano/out/test-image/` (MANIFEST.txt + 5 images).
 
 ## 3. Boot order (each attempt is costless)
@@ -38,18 +43,31 @@ fastboot devices                      # device visible
 fastboot getvar current-slot          # RECORD it
 fastboot getvar unlocked              # expect: yes
 
-# variant 1 — stock layout (primary)
-fastboot boot piano-test-boot.img piano-test-vendor_boot.img
-
-# variant 2 — if the device rejects variant 1 (vendor-ramdisk handling)
-fastboot boot piano-test-boot-ramdisk.img piano-test-vendor_boot-dtb.img
-
-# variant 3 — legacy all-in-one
+# primary — single image
 fastboot boot piano-test-boot-v2.img
+
+# optional abl-acceptance probe — v4 boot with EMPTY ramdisk, no dtb.
+# Only tells whether abl accepts a RAM boot at all: the kernel starting
+# and then stopping is EXPECTED (no initramfs/dtb inside this image).
+fastboot boot piano-test-boot.img
 ```
 
-If a variant hangs or returns to fastboot: hold power to reset, then try the
-next. Nothing was written; stock Android is one reboot away at all times.
+Why no dual-image commands: the host fastboot (Debian android-tools
+37.0.0, AOSP `FB_CMD_BOOT`: `boot KERNEL [RAMDISK [SECOND]]`) accepts
+exactly ONE image per `boot`; passing a second boot.img dies with
+`cannot boot a boot.img *and* ramdisk` (string confirmed in the host
+binary). So the v4 combos (`boot`+`vendor_boot`,
+`boot-ramdisk`+`vendor_boot-dtb`) have **no RAM path on this host**.
+They become available again if the host fastboot's own usage text shows
+multi-image boot support.
+
+**If the primary (v2) is rejected by abl** (error, device returns to
+fastboot): record the raw `fastboot` output and STOP — report it, do not
+improvise. Rationale: the v4 dual-image combos are unusable here (see
+above); flashing `vendor_boot_b` is NOT permitted (AGENTS.md writable
+whitelist is `boot_b`/`dtbo_b`/userdata-derived only), so it is not a
+bypass; and any new workaround (e.g. an Image+dtb concatenated sixth
+variant) is new content that needs explicit user approval first.
 
 ## 4. After boot
 
@@ -62,25 +80,55 @@ ssh -i debian-piano/out/test-image/piano-test-ssh-ed25519 root@10.42.0.2
 # or, built with --root-password:  ssh root@10.42.0.2   (then password)
 # or, built with --root-password '': press enter at the password prompt
 
-piano-tests          # menu: probe status, touch, display, evidence
+piano-tests          # interactive menu below (9 tests + status matrix)
 ```
 
-- **Touch test** (`1`): enables `/proc/nvt_thp_raw` and streams decoded
-  THP frames (sequence, validity flags, CRC, first event bytes) to the SSH
-  session for 30 s — touch the screen. Pass criterion: frames with
-  `VALID` and increasing sequence while touching.
-- **Display test** (`2`): DRM connector status, fb geometry, full-screen
-  R/G/B/W/K fields + noise via `/dev/fb0`. Pass criterion: fields visible.
-- **Evidence** (`3`): tarball with dmesg, /proc state, DRM/touch status;
-  `scp root@10.42.0.2:/run/piano-evidence-*.tar.gz .`
-- A boot smoke report is written automatically to `/run/boot-smoke.log`.
+- **Touch** (`1`): enables `/proc/nvt_thp_raw` and streams decoded THP
+  frames (sequence, validity flags, CRC, first event bytes) for 30 s —
+  touch the screen. Pass: `VALID` frames with increasing sequence.
+- **Display** (`2`): DRM connector status, fb geometry, full-screen
+  R/G/B/W/K fields + noise via `/dev/fb0`, held 2 s each.
+  Pass: fields visible on the panel.
+- **Audio** (`3`): walks the ADSP → soundwire → wcd9395 → wsa884x
+  soundcard chain; `3a` additionally plays a 3 s 440/880 Hz tone through
+  the speakers (manual listen: audible = full analog chain works).
+- **Battery** (`4`): pmic-glink/battmgr telemetry (capacity, status,
+  charge types) — requires ADSP running.
+- **WLAN** (`5`): pcie0 enumeration → ath12k probe, optional scan.
+- **Bluetooth** (`6`): uart14 serdev + pwrseq + hci0 bring-up.
+- **Collect** (`7`, verbose `7v`): one-shot evidence tarball (dmesg,
+  /proc state, DRM/touch status); `scp root@10.42.0.2:/run/piano-evidence-*.tar.gz .`
+- **dmesg** (`8`): subsystem-filtered tail (panel/DRM/touch/USB/PMIC/
+  remoteproc/audio/ath12k/qca).
+- **probe** (`9`): refresh the status matrix.
+- A boot smoke report is written automatically to `/run/boot-smoke.log`
+  by `piano-tests --auto` ~5 s after boot (status matrix + evidence
+  tarball, non-interactive).
+
+### 4b. Device coverage & first-boot expectations
+
+Kernel `7.2.6-00013-g2f4a243cb610` (`piano/test-bringup`). What the
+image is prepared to bring up on first boot, and where it may not:
+
+| Subsystem | DT node | Driver / module | Firmware in image | First-boot expectation | Known risk |
+|---|---|---|---|---|---|
+| Display | mdss_mdp + dsi0 + NT37801 panel | `DRM_MSM=y`, `DRM_PANEL_NOVATEK_NT37801=y` (fbcon) | — | kernel console text on the panel | panel family unknown (OQ#15); vci/vdd rail mapping from MTP (OQ#16); VSP/VSN regulators always-on → heat (OQ#17) |
+| Touch | spi2 + nt36532e | `nt36532e_ts=m` + `spi-geni-qcom=m` | `novatek/novatek_nt36532_piano_fw_csot.bin` (CSOT pinned in DT; BOE variant also shipped) | probes after the panel; `/proc/nvt_thp_status` exists | wrong-family blob → CRC fail inside the IC, recovers on reboot; avdd/lcd-id GPIOs unmanaged (OQ#18) |
+| USB-NCM | dwc3 gadget usb0 | built-in (`=y`: libcomposite + NCM) | — | host gets 10.42.0.2/24, ssh works | — |
+| Battery | pmic_glink → battmgr | `pmic_glink=m`, `qcom_battmgr=m` | via ADSP image | capacity/status readable once ADSP runs | needs the shipped `piano-pd-locator` for the glink domain |
+| ADSP/CDSP | remoteproc `adsp`/`cdsp` | `qcom_q6v5_pas=m` | `qcom/sm8750/{adsp,cdsp}.mbn` (84 files: mdt→mbn renamed + bNN segments) | remoteproc state `running` for both | first load of a vendor firmware on mainline — watch dmesg |
+| Audio | sm8750 sndcard + wcd9395 + wsa884x + soundwire | sc8280xp/wcd939x/wsa884x/soundwire chain `=m` | via ADSP image | `/proc/asound/cards` lists the card | WSA884x vs 883x amp variant decided by SDW enumeration (OQ#21) |
+| WLAN | pcie0, PCI 17cb:110e | `ath12k=m` (ID added, probes the WCN7850 path) | `ath12k/WCN7850/hw2.0/` (4 files) + board data | PCI enum → MHI → QMI → wiphy | CE config / firmware family may differ from WCN7850 hw2.0 (OQ#20) |
+| Bluetooth | uart14 serdev + pwrseq | `hci_uart=m`, `btqca`, `pwrseq-qcom-wcn=m` | `qca/` hmt family (6 files) | `hci0` appears with an address | same combo rails/clock as WLAN (OQ#20) |
+| GPU | absent | not in this image | — | — | GPU validation is a separate later session (`bp/gpu-v1` is not merged into `piano/test-bringup`) |
 
 ## 5. Abort criteria (stop, hold power, collect evidence)
 
 - Panel area or SoC area becomes noticeably hot, or any burning smell.
 - Panel stays dark AND the VSP/VSN area heats (rail mapping suspect — OQ#16).
 - Battery below 20 %.
-- Repeated boot aborts in all three variants (record `fastboot` output).
+- Primary (v2) rejected by abl — record the raw `fastboot` output and
+  stop (§3). Repeated silent aborts of the primary likewise.
 
 ## 6. Rebuild / customize
 
