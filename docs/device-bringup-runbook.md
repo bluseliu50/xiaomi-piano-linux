@@ -114,11 +114,11 @@ image is prepared to bring up on first boot, and where it may not:
 |---|---|---|---|---|---|
 | Display | mdss_mdp + dsi0 + NT37801 panel | `DRM_MSM=y`, `DRM_PANEL_NOVATEK_NT37801=y` (fbcon) | — | kernel console text on the panel | panel family unknown (OQ#15); vci/vdd rail mapping from MTP (OQ#16); VSP/VSN regulators always-on → heat (OQ#17) |
 | Touch | spi2 + nt36532e | `nt36532e_ts=m` + `spi-geni-qcom=m` | `novatek/novatek_nt36532_piano_fw_csot.bin` (CSOT pinned in DT; BOE variant also shipped) | probes after the panel; `/proc/nvt_thp_status` exists | wrong-family blob → CRC fail inside the IC, recovers on reboot; avdd/lcd-id GPIOs unmanaged (OQ#18) |
-| USB-NCM | dwc3 gadget usb0 | built-in (`=y`: libcomposite + NCM) | — | host gets 10.42.0.2/24, ssh works | — |
+| USB-NCM | dwc3 gadget usb0 | built-in (`=y`: libcomposite + NCM, M31 eUSB2 + QMP combo phys); `pmic_glink_altmode=m` loaded by /init for Type-C role/orientation (gadget defaults to peripheral without it, USB2 speed only) | — | host gets 10.42.0.2/24, ssh works | — |
 | Battery | pmic_glink → battmgr | `pmic_glink=m`, `qcom_battmgr=m` | via ADSP image | capacity/status readable once ADSP runs | needs the shipped `piano-pd-locator` for the glink domain |
 | ADSP/CDSP | remoteproc `adsp`/`cdsp` | `qcom_q6v5_pas=m` | `qcom/sm8750/{adsp,cdsp}.mbn` (84 files: mdt→mbn renamed + bNN segments) | remoteproc state `running` for both | first load of a vendor firmware on mainline — watch dmesg |
 | Audio | sm8750 sndcard + wcd9395 + wsa884x + soundwire | sc8280xp/wcd939x/wsa884x/soundwire chain `=m` | via ADSP image | `/proc/asound/cards` lists the card | WSA884x vs 883x amp variant decided by SDW enumeration (OQ#21) |
-| WLAN | pcie0, PCI 17cb:110e | `ath12k=m` (ID added, probes the WCN7850 path) | `ath12k/WCN7850/hw2.0/` (4 files) + board data | PCI enum → MHI → QMI → wiphy | CE config / firmware family may differ from WCN7850 hw2.0 (OQ#20) |
+| WLAN | pcie0, PCI 17cb:110e | `pcie-qcom=y` + `qmp-pcie phy=m` (packed, loaded by /init), `ath12k=m` (ID added, probes the WCN7850 path) | `ath12k/WCN7850/hw2.0/` (4 files) + board data | PCI enum → MHI → QMI → wiphy | CE config / firmware family may differ from WCN7850 hw2.0 (OQ#20) |
 | Bluetooth | uart14 serdev + pwrseq | `hci_uart=m`, `btqca`, `pwrseq-qcom-wcn=m` | `qca/` hmt family (6 files) | `hci0` appears with an address | same combo rails/clock as WLAN (OQ#20) |
 | GPU | absent | not in this image | — | — | GPU validation is a separate later session (`bp/gpu-v1` is not merged into `piano/test-bringup`) |
 
