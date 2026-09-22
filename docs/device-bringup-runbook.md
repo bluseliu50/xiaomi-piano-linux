@@ -238,6 +238,36 @@ does not collide with the flat `/lib/modules/*.ko` dlkm layout.
 - §4b's device table remains aspirational until the DTB-side providers
   land; drivers `=y`/`=m` states in it are still accurate as built.
 
+### 7.5 ABL partition-state poisoning (2026-09-22 evening incident, recovered 2026-09-23)
+
+Symptom: `fastboot boot` downloads OKAY, but "Booting" drops USB instantly,
+the device resets, ABL flags slot b unbootable (`getvar slot-unbootable:b`
+→ yes) and falls back to Android (slot a). The kernel never executes —
+`oem lkmsg` via `out/fastboot-data-cmd.py` shows zero mainline lines, only
+the last Android kernel log. This signature means **ABL aborted before the
+jump**, not a kernel crash.
+
+Cause: the current-slot partition set had been left inconsistent (custom
+`boot_b` / `vbmeta_b` experiments written on top of the otherwise stock
+set during an evening session). The v4 RAM-boot path still composes and
+verifies current-slot metadata alongside the downloaded image; a mismatched
+pair aborts the boot. Byte-identical images and repo-level reverts cannot
+fix this — it is device persistent state, not code. One whole debugging
+night was spent rebuilding perfect images against a poisoned device.
+
+Recovery (verified working 2026-09-23, telnet SHELL-OK re-confirmed):
+1. Stock **no-wipe** fastboot ROM reflash — restores every slot partition
+   to a self-consistent stock set; userdata survives.
+2. `fastboot set_active b`
+3. `fastboot flash dtbo_b dtbo-usb-nopd9.img` — the single non-stock piece
+   the working combo needs (stock dtbo walks into the M31 eUSB2 init hang).
+4. `fastboot boot piano-test-boot-usb31.img` → USB drop ~7–10 s, NCM NIC
+   enumerates on the host, `telnet 10.42.0.2 23` answers.
+
+Rule: never leave custom `boot_b`/`vbmeta_b` content sitting on the device
+alongside stock counterparts. If "Booting" fails instantly and lkmsg has no
+mainline output, suspect partition state before touching any code.
+
 ## 8. USB NCM debug network (2026-09-22, achieved)
 
 The dwc3 UDC is up and carries a usable debug network — this closes the
