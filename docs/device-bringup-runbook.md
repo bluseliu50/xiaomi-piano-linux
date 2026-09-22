@@ -101,15 +101,13 @@ piano-tests          # interactive menu below (9 tests + status matrix)
 - **WLAN** (`5`): pcie0 enumeration → ath12k probe, optional scan.
 - **Bluetooth** (`6`): uart14 serdev + pwrseq + hci0 bring-up.
 - **Collect** (`7`, verbose `7v`): one-shot evidence tarball (dmesg,
-  /proc state, DRM/touch status; verbose adds debugfs gpio/pinctrl/clk/
-  asoc tables — debugfs is mounted by `/init`); copy off with
-  `scp -i debian-piano/out/test-image/piano-test-ssh-ed25519 root@10.42.0.2:/run/piano-evidence-*.tar.gz .`
+  /proc state, DRM/touch status); `scp root@10.42.0.2:/run/piano-evidence-*.tar.gz .`
 - **dmesg** (`8`): subsystem-filtered tail (panel/DRM/touch/USB/PMIC/
   remoteproc/audio/ath12k/qca).
 - **probe** (`9`): refresh the status matrix.
 - A boot smoke report is written automatically to `/run/boot-smoke.log`
-  by `piano-tests --auto` ~20 s after boot (probed status matrix +
-  evidence tarball, non-interactive).
+  by `piano-tests --auto` ~5 s after boot (status matrix + evidence
+  tarball, non-interactive).
 
 ### 4b. Device coverage & first-boot expectations
 
@@ -239,26 +237,24 @@ does not collide with the flat `/lib/modules/*.ko` dlkm layout.
   dump table is explored but unverified.
 - §4b's device table remains aspirational until the DTB-side providers
   land; drivers `=y`/`=m` states in it are still accurate as built.
+
 ## 8. USB NCM debug network (2026-09-22, achieved)
 
 The dwc3 UDC is up and carries a usable debug network — this closes the
-"dwc3 UDC → USB NCM gadget" sub-goal. Since the 2026-09-22 evening round
-the image additionally ships a **static musl dropbear (real ssh)** and
-**restores the full subsystem module loading** in `/init`.
+"dwc3 UDC → USB NCM gadget" sub-goal.
 
 ### 8.1 Working combination
 
 - Kernel: `linux-piano` branch `piano/usb-udc-bringup` (PR #8): empty-
   extcon handling in `dwc3_get_extcon()`, icc degrade in `dwc3-qcom`,
-  corrected `qcom,msm-id`, `CONFIG_SM_TCSRCC_8750=y` (merged into
-  `piano-7.2.6`; carried by `piano/test-bringup` for the full stack).
+  corrected `qcom,msm-id`, `CONFIG_SM_TCSRCC_8750=y`.
 - DTBO: `debian-piano/boot/dtbo-piano-usb-nopd9.dts` → `dtbo_b`.
 - Initramfs: `debian-piano` branch `piano/usb-ncm-initramfs` (PR #11):
-  `beaconinit` NCM gadget + udhcpd; the `bp/boot-stack-restore` branch
-  on top adds static dropbear, debugfs, and the module-loading sequence.
-- Build: `scripts/build-test-image.sh` (canonical entry; builds kernel
-  + five image variants + round-trip verification), then `fastboot boot
-  debian-piano/out/test-image/piano-test-boot-v2.img`.
+  `beaconinit` NCM gadget + udhcpd + telnetd.
+- Build: `scripts/build-test-bootimg.sh --kernel-dir linux-piano/out
+  --firmware-dir local/firmware --output-dir debian-piano/out/test-image`
+  (must run `make modules dtbs` first), then `fastboot boot
+  debian-piano/out/test-image/piano-test-boot.img`.
 
 ### 8.2 Host side
 
@@ -266,13 +262,12 @@ the image additionally ships a **static musl dropbear (real ssh)** and
 nmcli connection add type ethernet ifname <usb-nic> con-name piano-ncm \
     ipv4.method manual ipv4.addresses 10.42.0.1/24 ipv6.method disabled
 nmcli connection up piano-ncm
-ssh -i debian-piano/out/test-image/piano-test-ssh-ed25519 root@10.42.0.2
-nc 10.42.0.2 23        # busybox telnetd fallback shell (no auth)
+nc 10.42.0.2 23        # busybox telnetd remote shell (no auth)
 ```
 
-Device side: `usb0` at 10.42.0.2/24, dropbear (static) on :22,
-telnetd on :23 as fallback. Evidence tarballs copy off with `scp`
-(see §4 collect).
+Device side: `usb0` at 10.42.0.2/24, telnetd on :23, dropbear attempted
+on :22 (dynamically linked in the current initramfs — falls back).
+
 ### 8.3 Known gaps (tracked separately)
 
 - **M31 eUSB2 init sequence hangs the SoC bus** (silent async death, no
@@ -284,10 +279,9 @@ telnetd on :23 as fallback. Evidence tarballs copy off with `scp`
   `af20000.rsc`; that keeps the interconnect providers out of
   `sync_state` and is why `dwc3-qcom` degrades past the usb-ddr icc
   path instead of blocking on it.
-- ~~dropbear dynamically linked~~ — RESOLVED 2026-09-22: the image now
-  ships a static musl dropbear (built from pinned source by
-  `fetch-arm64-tools.sh`, see `out/arm64-tools/dropbear-static`);
-  telnetd remains as a fallback.
+- **dropbear is dynamically linked** (Debian build) and cannot exec in
+  the initramfs (no libc); swap in a statically linked dropbear for
+  real ssh.
 
 ### 8.4 Debugging scars worth remembering
 
@@ -302,10 +296,3 @@ telnetd on :23 as fallback. Evidence tarballs copy off with `scp`
   (`--busybox/--dropbear-tree --output`); invoking it bare prints usage
   and exits while looking deceptively like a successful build.
 
-
-- Packed-but-not-loaded modules masquerade as driver failures: the
-  2026-09-22 beacon image disabled `/init`'s modprobe calls, and every
-  subsystem except display (built-in) and usb-net showed FAIL — the
-  whole matrix recovered once loading was restored. The initramfs has
-  no udev: each module must be modprobed explicitly, and `lsmod` is the
-  first check when a subsystem reports FAIL.
