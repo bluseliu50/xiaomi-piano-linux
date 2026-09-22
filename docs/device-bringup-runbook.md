@@ -281,10 +281,13 @@ The dwc3 UDC is up and carries a usable debug network — this closes the
 - DTBO: `debian-piano/boot/dtbo-piano-usb-nopd9.dts` → `dtbo_b`.
 - Initramfs: `debian-piano` branch `piano/usb-ncm-initramfs` (PR #11):
   `beaconinit` NCM gadget + udhcpd + telnetd.
-- Build: `scripts/build-test-bootimg.sh --kernel-dir linux-piano/out
-  --firmware-dir local/firmware --output-dir debian-piano/out/test-image`
-  (must run `make modules dtbs` first), then `fastboot boot
-  debian-piano/out/test-image/piano-test-boot.img`.
+- Build: `scripts/build-test-image.sh` from the workspace root — builds
+  the initramfs, embeds it via `CONFIG_INITRAMFS_SOURCE` (out/.config is
+  preserved, never regenerated — see §7.5 and the script's option gate),
+  builds `Image`, and packs exactly three deliverables:
+  `debian-piano/out/test-image/{boot.img,dtbo.img,MANIFEST.txt}`.
+  Then follow the MANIFEST recipe: `fastboot set_active b` →
+  `fastboot flash dtbo_b dtbo.img` → `fastboot boot boot.img`.
 
 ### 8.2 Host side
 
