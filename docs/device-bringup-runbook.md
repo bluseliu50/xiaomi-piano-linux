@@ -38,6 +38,10 @@ Findings from reviewing every branch/artifact that touches the device:
 
 ## 3. Boot order (each attempt is costless)
 
+> **SUPERSEDED 2026-09-22 by §7**: the v2 primary below is a documented
+> dead end on this device (silent ABL rejection). Use the v4 RAM-boot
+> contract in §7; the ladder below is kept for the record.
+
 ```
 fastboot devices                      # device visible
 fastboot getvar current-slot          # RECORD it
@@ -161,3 +165,134 @@ debian-piano/scripts/build-test-bootimg.sh \
 Kernel side: `linux-piano` branch `piano/test-bringup`
 (display pipeline + NT37801 panel + NT36532E SPI touch, panel-follower
 wired).
+
+## 7. Measured boot contract (2026-09-22, on-device)
+
+Everything below was verified against the real device on 2026-09-22 and
+supersedes the §3 ladder and the §4b expectations table.
+
+### 7.1 What ABL actually accepts
+
+| Variant | Result |
+|---|---|
+| v0 boot.img (gzip/raw, ±appended DTB, stock DTB, sheng tags recipe) | **silent rejection** — `OKAY`, gadget stays, no USB bounce. Any DTB in a v0 kernel region is refused, regardless of content |
+| custom vendor_boot (our DTB / marker ramdisk) | **silent rejection** |
+| **v4 `fastboot boot` + CURRENT SLOT's stock vendor_boot + current-slot dtbo** | **kernel executes** (USB drop at ~7-10 s, no fall-back, panel backlight on) |
+
+Consequences: the device tree the kernel sees is the **stock vendor DTB +
+dtbo_b**, never our own DTB; every mainline node must be injected as a
+DTBO *fragment* (rules in §7.3). The stock cmdline (`console=ttynull`)
+is countered by `CONFIG_CMDLINE_FORCE`. Current slot must be `b`
+(`fastboot set_active b`) because RAM boot composes slot-b images.
+
+### 7.2 Panel console (simpledrm)
+
+`dtbo_b = dtbo-piano-bringup.img` (source: `debian-piano/boot/dtbo-piano-bringup.dts`,
+built byte-identical by `debian-piano/scripts/build-dtbo.py`).
+
+- All stock fragments kept intact; one added `fragment@200`
+  (`target-path="/"`, zero phandle deps): `framebuffer@fc800000` over the
+  cont_splash memory (0xfc800000 / 0x2b00000).
+- Geometry: the panel is **dual-DSI**: full width **3200** (1600 per DSI
+  side) x 2136, stride **12800**, `a8b8g8r8`. Declaring 1600/6400 renders
+  as four quadrants: top two duplicated console lines, bottom two black
+  (real scanout consumes two 6400-byte console rows per display row).
+- `/reserved-memory/splash_region` needs **`no-map`**: without it
+  simpledrm's `devm_ioremap_wc` hits the linear mapping → panic at probe.
+- ABL rewrites phandles in the merged tree — hard phandle references from
+  added fragments always dangle. `target-path="/"` only.
+
+Kernel side (all `=y`): `DRM_SIMPLEDRM` (binds the DT
+`simple-framebuffer` node; replaces `FB_SIMPLE`), `DRM_PANIC` +
+`DRM_PANIC_SCREEN="qr_code"` + `DRM_PANIC_SCREEN_QR_CODE` (needs `RUST`;
+bindgen from `cargo install bindgen-cli`, rust-src from the `rust-src`
+package), `FONT_TER16x32`, `CONFIG_CMDLINE_FORCE` with
+`console=tty0 loglevel=8 fbcon=font:TER16x32 rdinit=/beaconinit`.
+Kernel panics render as a big QR code encoding the kmsg tail — scan it
+with a phone, no OCR needed.
+
+### 7.3 The init override (root cause of the first "panic")
+
+During v4 RAM boot ABL concatenates ramdisks from the CURRENT SLOT's
+init_boot (first-stage init — verified: the stock vendor_ramdisk itself
+carries only 448 flat dlkm modules + `first_stage_ramdisk/fstab.qcom`,
+no `/init`) and vendor_boot (dlkm) **after** our ramdisk; cpio cascade
+rules make later archives win, so Android first-stage init replaced our
+`/init` (it died mounting selinuxfs → `Attempted to kill init`, which
+looked like a boot panic). Fix: the same script ships as `/beaconinit`
+and `rdinit=/beaconinit` (forced cmdline) selects it. Any future ramdisk
+entry point MUST NOT be called `/init`. Our `/lib/modules/<kver>/` tree
+does not collide with the flat `/lib/modules/*.ko` dlkm layout.
+
+### 7.4 Still open (next sessions)
+
+- USB/dwc3: mainline `sm8750.dtsi` has `usb@a600000` + m31-eusb2 +
+  qmp-usb3-dp PHYs, but binding needs gcc/tcsrcc/pdc/rpmhpd/smmu/
+  interconnect providers under mainline naming — a staged DTBO effort
+  (override providers first), not a one-shot fragment. Gadget/NCM side
+  is already `=y`.
+- Log read-back without display/USB: `oem lkmsg` (95 kB kernel log via
+  DATA phase; needs `out/fastboot-data-cmd.py`, the stock fastboot CLI
+  discards the payload). Registering our own dump region in the IMEM
+  dump table is explored but unverified.
+- §4b's device table remains aspirational until the DTB-side providers
+  land; drivers `=y`/`=m` states in it are still accurate as built.
+
+## 8. USB NCM debug network (2026-09-22, achieved)
+
+The dwc3 UDC is up and carries a usable debug network — this closes the
+"dwc3 UDC → USB NCM gadget" sub-goal.
+
+### 8.1 Working combination
+
+- Kernel: `linux-piano` branch `piano/usb-udc-bringup` (PR #8): empty-
+  extcon handling in `dwc3_get_extcon()`, icc degrade in `dwc3-qcom`,
+  corrected `qcom,msm-id`, `CONFIG_SM_TCSRCC_8750=y`.
+- DTBO: `debian-piano/boot/dtbo-piano-usb-nopd9.dts` → `dtbo_b`.
+- Initramfs: `debian-piano` branch `piano/usb-ncm-initramfs` (PR #11):
+  `beaconinit` NCM gadget + udhcpd + telnetd.
+- Build: `scripts/build-test-bootimg.sh --kernel-dir linux-piano/out
+  --firmware-dir local/firmware --output-dir debian-piano/out/test-image`
+  (must run `make modules dtbs` first), then `fastboot boot
+  debian-piano/out/test-image/piano-test-boot.img`.
+
+### 8.2 Host side
+
+```
+nmcli connection add type ethernet ifname <usb-nic> con-name piano-ncm \
+    ipv4.method manual ipv4.addresses 10.42.0.1/24 ipv6.method disabled
+nmcli connection up piano-ncm
+nc 10.42.0.2 23        # busybox telnetd remote shell (no auth)
+```
+
+Device side: `usb0` at 10.42.0.2/24, telnetd on :23, dropbear attempted
+on :22 (dynamically linked in the current initramfs — falls back).
+
+### 8.3 Known gaps (tracked separately)
+
+- **M31 eUSB2 init sequence hangs the SoC bus** (silent async death, no
+  oops). The USB2 consumer points at `usb_nop_phy` (legacy
+  `usb-nop-xceiv`), so dwc3 runs on the bootloader-configured PHY state.
+  Re-enabling `m31eusb2_phy_init()` requires first making the phy's
+  register writes safe (BCR reset ordering / register-clock gating).
+- **RPMh RSC probe fails `-EINVAL`** on both `adc8000.rsc` and
+  `af20000.rsc`; that keeps the interconnect providers out of
+  `sync_state` and is why `dwc3-qcom` degrades past the usb-ddr icc
+  path instead of blocking on it.
+- **dropbear is dynamically linked** (Debian build) and cannot exec in
+  the initramfs (no libc); swap in a statically linked dropbear for
+  real ssh.
+
+### 8.4 Debugging scars worth remembering
+
+- `piano_fb_stamp()` framebuffer staging proved the crash point survived
+  a hard hang (printk never flushes); full-screen background colour per
+  step beat counting pixel squares. Removed again once the root cause
+  (M31 init) was pinned down.
+- A shell syntax error in `beaconinit` (empty `if` body) kills pid 1 and
+  panics the kernel with "Attempted to kill init" — always `bash -n`
+  the init script before shipping it.
+- `build-initramfs.sh` must be invoked with full arguments
+  (`--busybox/--dropbear-tree --output`); invoking it bare prints usage
+  and exits while looking deceptively like a successful build.
+
