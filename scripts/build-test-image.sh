@@ -119,20 +119,16 @@ if [ "$SKIP_KERNEL" != 1 ]; then
         [ -d "$FIRMWARE_DIR/$d" ] || die "missing device firmware dir local/firmware/$d"
     done
 
-    KVER=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"$/\1/p' \
-        "$KERNEL_OUT/include/generated/utsrelease.h" 2>/dev/null) \
-        || true
-    if [ -z "$KVER" ]; then
-        # utsrelease.h appears after the first prepare; force it
-        make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" \
-            include/generated/utsrelease.h >/dev/null
-        KVER=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"$/\1/p' \
-            "$KERNEL_OUT/include/generated/utsrelease.h")
-    fi
-    [ -n "$KVER" ] || die "cannot determine kernel release"
-
-    echo "build-test-image: building kernel modules ($KVER)"
+    echo "build-test-image: building kernel modules"
     make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" -j"$JOBS" modules
+
+    # Kernel release: read AFTER the build — utsrelease.h carries the
+    # release of the tree that last built it, and a stale value here
+    # silently misdirects modules_install/depmod into a wrong
+    # lib/modules/<kver> directory (fatal one turn later).
+    KVER=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"$/\1/p' \
+        "$KERNEL_OUT/include/generated/utsrelease.h")
+    [ -n "$KVER" ] || die "cannot determine kernel release from utsrelease.h"
 
     # Module closure: install to a staging root, then resolve the curated
     # entry set with modprobe --show-depends so the packed set is always
