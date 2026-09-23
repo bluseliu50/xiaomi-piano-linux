@@ -163,7 +163,14 @@ if [ "$SKIP_KERNEL" != 1 ]; then
         || die "module closure has only $NMODS modules — expected 30+ (see $MODSTAGE/modprobe.err)"
     echo "build-test-image: module closure: $NMODS modules"
     MOD_ARGS=()
-    while IFS= read -r ko; do MOD_ARGS+=(--module "$ko"); done < "$MODLIST"
+    # build-initramfs.sh strips the "linux-piano/out/" prefix from module
+    # paths; translate the staging-root closure paths back to kernel-out
+    # form so the packing lands at lib/modules/<kver>/kernel/...
+    while IFS= read -r ko; do
+        rel=${ko#*/lib/modules/$KVER/kernel/}
+        [ "$rel" != "$ko" ] || die "unexpected module path: $ko"
+        MOD_ARGS+=(--module "$KERNEL_OUT/$rel")
+    done < "$MODLIST"
 
     # Firmware staging in the layout build-initramfs.sh consumes:
     #   novatek/*.bin  qca/  ath12k/  qcom/sm8750/{adsp,cdsp}*.mbn+bNN
