@@ -64,7 +64,7 @@ case "$JOBS" in ''|*[!0-9]*) die "--jobs must be a positive integer (got '$JOBS'
 WORKSPACE=$(cd "$(dirname "$0")/.." && pwd)
 KERNEL="$WORKSPACE/linux-piano"
 DEBIAN="$WORKSPACE/debian-piano"
-REQUIRED_BRANCH=piano/test-bringup
+REQUIRED_BRANCH=piano/subsys-bringup
 
 [ -d "$KERNEL/.git" ] || [ -f "$KERNEL/.git" ] \
     || die "linux-piano submodule not found at $KERNEL (git submodule update --init)"
@@ -100,18 +100,113 @@ if [ "$SKIP_KERNEL" != 1 ] && [ ! -s "$KERNEL_OUT/.config" ]; then
 fi
 
 if [ "$SKIP_KERNEL" != 1 ]; then
-    # --- debug initramfs -------------------------------------------------------
+    # --- subsystem payload: kernel modules + firmware + pd-locator -----------
     TOOLS="$DEBIAN/out/arm64-tools"
     BUSYBOX="$TOOLS/busybox"
     DROPBEAR_TREE="$TOOLS/dropbear/tree"
+    APLAY_TREE="$TOOLS/aplay/tree"
+    MUSL_SYSROOT="$TOOLS/musl-sysroot"
+    FIRMWARE_DIR="$WORKSPACE/local/firmware"
     [ -x "$BUSYBOX/busybox" ] \
         || die "no staged busybox at $BUSYBOX (run debian-piano/scripts/fetch-arm64-tools.sh)"
     [ -x "$DROPBEAR_TREE/usr/sbin/dropbear" ] \
         || die "no staged dropbear tree at $DROPBEAR_TREE (run fetch-arm64-tools.sh)"
+    [ -x "$APLAY_TREE/usr/bin/aplay" ] \
+        || die "no staged aplay tree at $APLAY_TREE (run fetch-arm64-tools.sh)"
+    [ -f "$MUSL_SYSROOT/usr/lib/libc.a" ] \
+        || die "no musl sysroot at $MUSL_SYSROOT (run fetch-arm64-tools.sh)"
+    for d in wifi-bt/ath12k/WCN7850 wifi-bt/qca non-hlos/image odm/firmware; do
+        [ -d "$FIRMWARE_DIR/$d" ] || die "missing device firmware dir local/firmware/$d"
+    done
+
+    KVER=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"$/\1/p' \
+        "$KERNEL_OUT/include/generated/utsrelease.h" 2>/dev/null) \
+        || true
+    if [ -z "$KVER" ]; then
+        # utsrelease.h appears after the first prepare; force it
+        make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" \
+            include/generated/utsrelease.h >/dev/null
+        KVER=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"$/\1/p' \
+            "$KERNEL_OUT/include/generated/utsrelease.h")
+    fi
+    [ -n "$KVER" ] || die "cannot determine kernel release"
+
+    echo "build-test-image: building kernel modules ($KVER)"
+    make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" -j"$JOBS" modules
+
+    # Module closure: install to a staging root, then resolve the curated
+    # entry set with modprobe --show-depends so the packed set is always
+    # self-contained regardless of Kconfig drift.
+    MODSTAGE=$(mktemp -d "${TMPDIR:-/tmp}/piano-mods.XXXXXX")
+    FWSTAGE=$(mktemp -d "${TMPDIR:-/tmp}/piano-fw.XXXXXX")
+    trap 'rm -rf "$MODSTAGE" "$FWSTAGE"' EXIT
+    make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" \
+        INSTALL_MOD_PATH="$MODSTAGE" modules_install >/dev/null
+    depmod -b "$MODSTAGE" "$KVER"
+
+    # Entry modules by name (initramfs/init loads them in staged order):
+    #   A: qrtr + remoteproc + pmic-glink/battmgr   (adsp/cdsp/battery)
+    #   B: spi + nt36532e                            (touch)
+    #   C: snd-soc-sc8280xp closure                  (audio/audioreach)
+    #   D: pwrseq + hci_uart + btqca                 (bluetooth)
+    #   E: qmp-pcie phy + pcie-qcom + ath12k         (wlan, last)
+    ENTRY_MODULES="qrtr qrtr-smd qcom_q6v5_pas pmic_glink qcom_battmgr \
+                   spi-geni-qcom nt36532e_ts snd-soc-sc8280xp \
+                   pwrseq-qcom-wcn hci_uart btqca \
+                   phy-qcom-qmp-pcie pcie-qcom ath12k"
+    MODLIST="$MODSTAGE/list"
+    : > "$MODLIST"
+    for m in $ENTRY_MODULES; do
+        modprobe -S "$KVER" -d "$MODSTAGE" --show-depends "$m" 2>>"$MODSTAGE/modprobe.err" \
+            | awk '/^insmod /{print $2}' >> "$MODLIST" \
+            || echo "build-test-image: WARNING: modprobe cannot resolve '$m'" >&2
+    done
+    sort -u "$MODLIST" -o "$MODLIST"
+    NMODS=$(wc -l < "$MODLIST")
+    [ "$NMODS" -ge 30 ] \
+        || die "module closure has only $NMODS modules — expected 30+ (see $MODSTAGE/modprobe.err)"
+    echo "build-test-image: module closure: $NMODS modules"
+    MOD_ARGS=()
+    while IFS= read -r ko; do MOD_ARGS+=(--module "$ko"); done < "$MODLIST"
+
+    # Firmware staging in the layout build-initramfs.sh consumes:
+    #   novatek/*.bin  qca/  ath12k/  qcom/sm8750/{adsp,cdsp}*.mbn+bNN
+    mkdir -p "$FWSTAGE/novatek" "$FWSTAGE/qcom/sm8750"
+    cp "$FIRMWARE_DIR"/odm/firmware/novatek_nt36532_piano_fw_*.bin "$FWSTAGE/novatek/"
+    cp -a "$FIRMWARE_DIR/wifi-bt/qca" "$FWSTAGE/"
+    cp -a "$FIRMWARE_DIR/wifi-bt/ath12k" "$FWSTAGE/"
+    # The stock NON-HLOS names adsp/cdsp segments <name>.mdt + <name>.bNN;
+    # the DT asks for qcom/sm8750/<name>.mbn and the kernel MDT loader
+    # resolves <name>.mbn + <name>.bNN automatically.
+    for f in "$FIRMWARE_DIR"/non-hlos/image/adsp* "$FIRMWARE_DIR"/non-hlos/image/cdsp*; do
+        base=$(basename "$f")
+        case "$base" in
+            *.mdt) install -m 0644 "$f" "$FWSTAGE/qcom/sm8750/${base%.mdt}.mbn" ;;
+            *)     install -m 0644 "$f" "$FWSTAGE/qcom/sm8750/$base" ;;
+        esac
+    done
+    echo "build-test-image: staged firmware: $(find "$FWSTAGE" -type f | wc -l) files"
+
+    # piano-pd-locator: static aarch64 build against the staged musl sysroot
+    PD_LOCATOR_BIN="$MODSTAGE/piano-pd-locator"
+    clang --target=aarch64-linux-musl --sysroot="$MUSL_SYSROOT" -Os -Wall -Wextra \
+        -fno-stack-protector -fno-asynchronous-unwind-tables \
+        -c "$DEBIAN/initramfs/pd-locator/piano-pd-locator.c" -o "$MODSTAGE/pd-locator.o" \
+        || die "pd-locator compile failed"
+    ld.lld -o "$PD_LOCATOR_BIN" --sysroot="$MUSL_SYSROOT" -static \
+        "$MUSL_SYSROOT/usr/lib/crt1.o" "$MODSTAGE/pd-locator.o" "$MUSL_SYSROOT/usr/lib/libc.a" \
+        || die "pd-locator link failed"
+    file "$PD_LOCATOR_BIN" | grep -q 'ARM aarch64' \
+        || die "pd-locator did not build as an arm64 ELF"
+    echo "build-test-image: built piano-pd-locator ($(stat -c%s "$PD_LOCATOR_BIN") bytes)"
 
     echo "build-test-image: building initramfs -> $INITRAMFS"
     "$DEBIAN/scripts/build-initramfs.sh" \
         --busybox "$BUSYBOX" --dropbear-tree "$DROPBEAR_TREE" \
+        --aplay-tree "$APLAY_TREE" --pd-locator "$PD_LOCATOR_BIN" \
+        --kernel-version "$KVER" \
+        "${MOD_ARGS[@]}" \
+        --firmware-dir "$FWSTAGE" \
         --output "$INITRAMFS" --compress gzip
 
     # --- embed it into the kernel image ----------------------------------------

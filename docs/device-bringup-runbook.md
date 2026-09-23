@@ -329,3 +329,75 @@ on :22 (dynamically linked in the current initramfs — falls back).
   (`--busybox/--dropbear-tree --output`); invoking it bare prints usage
   and exits while looking deceptively like a successful build.
 
+
+## 9. Subsystem bring-up overlay (2026-09-23, staged)
+
+Goal: drive adsp, battery, audio, touch, wlan, bluetooth on top of the
+proven nopd9 boot contract — without ever risking the debug path
+(prime directive: a failed subsystem must never cost the boot).
+
+### 9.1 RPMh RSC — the -EINVAL root cause (OQ#23, solved statically)
+
+The vendor base DTB (vbdtb-04) ships `apps_rsc@16500000` with the
+MAINLINE-compatible string (`qcom,rpmh-rsc`) and the three-region
+`reg-names = "drv-0/1/2"` layout — the driver binds and maps fine. The
+failure was one property level up: the downstream 6.6 binding keeps
+`qcom,drv-id` / `qcom,tcs-offset` / `qcom,tcs-config` on the CHILD
+`drv@2` node, while the mainline `rpmh_rsc_probe()` reads them from the
+apps_rsc node itself — `of_property_read_u32(dn, "qcom,drv-id")`
+returns -EINVAL immediately. The fix is pure DTBO: hoist the three
+properties (values 2 / 0xd00 / ACTIVE 3 + SLEEP 2 + WAKE 2 + CTL 0,
+matching the vendor `channel@0` encoding) and delete the vendor
+`power-domains` phandle (downstream cx domain that never probes here).
+Children for `of_platform_populate`: bcm-voter, rpmhcc
+(`qcom,sm8750-rpmh-clk`), and rpmhpd (`qcom,sm8750-rpmhpd`, 20-level
+OPP table) as DIRECT children of apps_rsc — children of the
+non-compatible drv@2 node are never instantiated as platform devices.
+
+With RSC alive, the full qnoc set (mainline compatibles + voter + 2-cell
+args on all twelve vendor interconnect nodes) probes for real, which is
+what unlocks rpmhpd consumers (adsp/cdsp PAS), rpmhcc consumers (xo
+clocks, RF_CLK1 for BT) and icc consumers everywhere.
+
+### 9.2 Safety model — everything risky is a module
+
+- Boot-time (built-in) additions are PROVIDERS ONLY: rpmh-rsc/rpmhpd/
+  rpmhcc/qnoc, uart14 geni-serial (well-trodden), apps_smmu compatible.
+- adsp/cdsp PAS, pmic-glink/battmgr, the audio chain, touch, hci_uart,
+  and pcie are ALL modules, loaded by `initramfs/init` AFTER telnetd is
+  up, in stages A(adsp/battery) B(touch) C(audio) D(bluetooth)
+  E(pcie+ath12k, LAST). A hang in any stage leaves the shell and the
+  earlier stages alive; the modprobe list is bisectable without
+  touching the DTBO.
+- `PCIE_QCOM=m` in defconfig exists for exactly this reason.
+- The ucsi Type-C connector stays disabled (nopd9 fragment@216): role
+  switching is not allowed to touch the NCM debug path until proven
+  elsewhere. USB2 stays on `usb-nop-xceiv` (M31 init hang, OQ#22).
+
+### 9.3 Sources of truth for the overlay
+
+`boot/subsys-fragments.dtsi` (debian-piano) is spliced onto the
+device-verified nopd9 base by `boot/splice-subsys.py`; the generated
+`dtbo-piano-subsys.dts` is gitignored. Node content mirrors upstream
+sm8750.dtsi / sm8750-mtp.dts / our sm8750-xiaomi-piano.dts commits
+(2f4a243cb, 004a798b7, 20b9639c2) with the /soc 1-cell reg conversion
+(OQ: /soc is a 1-cell bus in the vendor tree). Labels resolve at apply
+time against the base `__symbols__` (1733 entries) via dtc `__fixups__`.
+
+Known accepted risks / expected failures on first boot:
+- adsp firmware: stock mdt segments renamed to .mbn; if the ADSP image
+  refuses to authenticate under the mainline PAS path, battery+audio
+  report empty while everything else stays up.
+- WSA884x vs WSA883x amp family (OQ#21) — CSOT panel family assumption
+  for touch firmware (OQ#15) — ath12k peach-vs-WCN7850 firmware
+  compatibility (OQ#20) all remain single-boot observable.
+
+### 9.4 Iteration recipe
+
+Unchanged from §7/§8.1: `scripts/build-test-image.sh` (now also builds
+modules, packs the firmware set + pd-locator, embeds the full
+initramfs), then `set_active b` → `flash dtbo_b dtbo.img` →
+`fastboot boot boot.img`. Subsystem status: `piano-tests` (auto report
+lands in /run/boot-smoke.log after 40 s; staged loader logs in
+/run/bringup-stages.log). Bisecting a stage = comment out modprobe
+lines in initramfs/init only.
