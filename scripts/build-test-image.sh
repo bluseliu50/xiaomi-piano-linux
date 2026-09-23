@@ -152,7 +152,7 @@ if [ "$SKIP_KERNEL" != 1 ]; then
     # pcie-qcom is a bool symbol built =y; its probe defers on the
     # (modular) QMP phy, so loading the phy in stage E is what brings
     # PCIe up after the debug shell is alive.
-    ENTRY_MODULES="qrtr qrtr-smd qcom_q6v5_pas pmic_glink qcom_battmgr \
+    ENTRY_MODULES="ramoops qrtr qrtr-smd qcom_q6v5_pas pmic_glink qcom_battmgr \
                    spi-geni-qcom nt36532e_ts \
                    snd-soc-sc8280xp snd-q6dsp-common snd-q6apm \
                    q6apm-dai q6apm-lpass-dais q6prm q6prm-clocks \
