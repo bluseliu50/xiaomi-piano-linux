@@ -146,10 +146,22 @@ if [ "$SKIP_KERNEL" != 1 ]; then
     #   C: snd-soc-sc8280xp closure                  (audio/audioreach)
     #   D: pwrseq + hci_uart + btqca                 (bluetooth)
     #   E: qmp-pcie phy + pcie-qcom + ath12k         (wlan, last)
+    # NOTE: the audioreach DSP modules (q6apm/q6prm/lpass macros/
+    # wcd939x/wsa884x) are DT soft dependencies of the machine driver —
+    # modprobe --show-depends cannot see them, they must be listed here.
+    # pcie-qcom is a bool symbol built =y; its probe defers on the
+    # (modular) QMP phy, so loading the phy in stage E is what brings
+    # PCIe up after the debug shell is alive.
     ENTRY_MODULES="qrtr qrtr-smd qcom_q6v5_pas pmic_glink qcom_battmgr \
-                   spi-geni-qcom nt36532e_ts snd-soc-sc8280xp \
+                   spi-geni-qcom nt36532e_ts \
+                   snd-soc-sc8280xp snd-q6dsp-common snd-q6apm \
+                   q6apm-dai q6apm-lpass-dais q6prm q6prm-clocks \
+                   snd-soc-lpass-macro-common snd-soc-lpass-rx-macro \
+                   snd-soc-lpass-tx-macro snd-soc-lpass-va-macro \
+                   snd-soc-lpass-wsa-macro \
+                   snd-soc-wcd939x-sdw snd-soc-wsa884x \
                    pwrseq-qcom-wcn hci_uart btqca \
-                   phy-qcom-qmp-pcie pcie-qcom ath12k"
+                   phy-qcom-qmp-pcie ath12k"
     MODLIST="$MODSTAGE/list"
     : > "$MODLIST"
     for m in $ENTRY_MODULES; do
