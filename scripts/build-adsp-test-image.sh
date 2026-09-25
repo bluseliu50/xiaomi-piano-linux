@@ -126,6 +126,7 @@ done
 make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" -j"$JOBS" Image
 
 "$DEBIAN/scripts/build-test-bootimg.sh" \
-    --kernel-dir "$KERNEL_OUT" --output-dir "$OUTPUT_DIR"
+    --kernel-dir "$KERNEL_OUT" --output-dir "$OUTPUT_DIR" \
+    --dtbo-source "$DEBIAN/boot/dtbo-piano-touch-m1.dts"
 
 echo "build-adsp-test-image: complete: $OUTPUT_DIR"
