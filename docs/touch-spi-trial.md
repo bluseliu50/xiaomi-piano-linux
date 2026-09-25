@@ -38,8 +38,31 @@ The next touch step requires a separately reviewed panel/pinctrl plan; the
 presence of `spi0.0` alone is not evidence of functional touch input.
 
 The current trial manifest records `boot.img` SHA256
-`34f5c4e411972cfaeee67a92c5eb847771ed7e3cdb432e544b364fb2f2217b11` and
+`de649e233b15c98ae014086e5014edb46529adebc713a094cb72cab215028112` and
 `dtbo.img` SHA256
 `26fe3551ddf82187e11d3c56ad5a936e980ef6889e37f5741d5610b422078a7a`.
 The original milestone-1 image pair is retained locally under
 `debian-piano/out/test-image/` for slot-B rollback.
+
+## Isolated TLMM trial and follow-up
+
+Commit `0170576` added an independent mainline TLMM node at `0xf100000`,
+matching `linux-piano/arch/arm64/boot/dts/qcom/sm8750.dtsi`. The device showed
+backlight but no console after that boot attempt. The USB cable was also loose,
+so the missing host NCM interface is not conclusive evidence of a kernel crash.
+Fastboot later reported `slot-unbootable:b: no`, but `oem lkmsg` returned
+`FAILNo such section`; no kernel trace was recoverable. The trial cannot yet
+isolate a failure mechanism. The node overlaps the stock `qcom,sun-tlmm`
+resource (`0xf000000` + `0x202000`) and was removed in follow-up commit
+`0084cb1` to avoid running two TLMM providers over the same hardware.
+
+The follow-up image booted with NCM reachability (3/3 ICMP replies); the
+operator confirmed normal console display, and the device remained reachable
+after approximately two minutes. `piano-touch-test` again found `a88000.spi`
+bound to `geni_spi` and `spi0.0` with modalias `spi:NVT-ts-spi`. Its
+`devices_deferred` output names the exact
+touch blockers: `spi0.0` waits for the downstream DSI panel node, while
+`soc:touch_avdd_vreg` cannot obtain its GPIO. The touch driver also waits for
+`panel_on` before checking the chip ID. Forcing probe while the panel and GPIO
+providers are unresolved would reach chip I/O with unknown power state; that
+is not part of this trial.
