@@ -32,6 +32,7 @@ DEBIAN="$WORKSPACE/debian-piano"
 KERNEL_OUT="$KERNEL/out/adsp-m1"
 OUTPUT_DIR="$DEBIAN/out/adsp-m1"
 FIRMWARE_SRC="$WORKSPACE/local/firmware/non-hlos/image"
+TOUCH_FIRMWARE_SRC="$WORKSPACE/local/firmware/odm/firmware"
 FIRMWARE_DIR="$KERNEL_OUT/firmware"
 
 [ "$(git -C "$KERNEL" branch --show-current)" = piano/adsp-m1 ] \
@@ -43,6 +44,7 @@ FIRMWARE_DIR="$KERNEL_OUT/firmware"
 [ -z "$(git -C "$DEBIAN" status --porcelain)" ] \
     || die "debian-piano has uncommitted changes"
 [ -d "$FIRMWARE_SRC" ] || die "missing extracted firmware: $FIRMWARE_SRC"
+[ -d "$TOUCH_FIRMWARE_SRC" ] || die "missing extracted touch firmware: $TOUCH_FIRMWARE_SRC"
 
 TOOLS="$DEBIAN/out/arm64-tools"
 BUSYBOX="$TOOLS/busybox"
@@ -78,7 +80,9 @@ for rel in \
     drivers/soc/qcom/pdr_interface.ko \
     drivers/soc/qcom/qmi_helpers.ko \
     net/qrtr/qrtr.ko \
-    net/qrtr/qrtr-smd.ko; do
+    net/qrtr/qrtr-smd.ko \
+    drivers/spi/spi-geni-qcom.ko \
+    drivers/input/touchscreen/nt36532e/nt36532e_ts.ko; do
     path="$KERNEL_OUT/$rel"
     [ -s "$path" ] || die "required module missing: $path"
     MODULES+=("$path")
@@ -91,8 +95,21 @@ cp -a "$FIRMWARE_SRC"/adsp.mdt "$FIRMWARE_SRC"/adsp.b* \
       "$FIRMWARE_SRC"/adsp_dtb.mdt "$FIRMWARE_SRC"/adsp_dtb.b* \
       "$FIRMWARE_DIR/qcom/sm8750/"
 
+# Keep all panel-family candidates staged for offline touch bring-up.  The
+# current DTBO deliberately omits firmware-name, so loading nt36532e_ts does
+# not download any candidate until the panel family is confirmed.
+mkdir -p "$FIRMWARE_DIR/novatek"
+for name in \
+    novatek_nt36532_piano_fw_boe.bin \
+    novatek_nt36532_piano_fw_csot.bin \
+    novatek_nt36532_piano_mp_boe.bin \
+    novatek_nt36532_piano_mp_csot.bin; do
+    [ -s "$TOUCH_FIRMWARE_SRC/$name" ] || die "missing touch firmware: $TOUCH_FIRMWARE_SRC/$name"
+    cp -a "$TOUCH_FIRMWARE_SRC/$name" "$FIRMWARE_DIR/novatek/"
+done
+
 INITRAMFS="$KERNEL_OUT/initramfs.cpio.gz"
-echo "build-adsp-test-image: building ADSP-only initramfs"
+echo "build-adsp-test-image: building isolated ADSP/touch initramfs"
 INITRAMFS_ARGS=(
     "$DEBIAN/scripts/build-initramfs.sh"
     --busybox "$BUSYBOX" --dropbear-tree "$DROPBEAR_TREE"
