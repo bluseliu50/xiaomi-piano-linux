@@ -94,3 +94,24 @@ SHA256 `f5153a424a708a39b56f1a063e2321d2393dbcfc3774a330ac759023bc7b0d14`;
 its DTBO is byte-identical to the last tested one. This is source-level safety
 work only: firmware selection remains disabled, and the new boot image has not
 been started on the device.
+
+## Controlled TLMM node isolation (not yet boot-tested)
+
+The next image set separates DTBO parsing from the mainline TLMM driver probe.
+Kernel commit `6b8e1fa55` makes `CONFIG_PINCTRL_SM8750=m`; the build stages
+`pinctrl-sm8750.ko` in the initramfs, but its init script does not load it.
+The DTBO in Debian commit `0d1f05c` restores the same independent
+`pinctrl@f100000` node as the failed trial without redirecting any stock GPIO
+consumer. Its SHA256 is exactly the earlier failed DTBO hash,
+`db34250860c4683338ec0765f9dbec94607302be458f8a4ca229260d0caf855f`.
+The matching RAM-boot image SHA256 is
+`03e45fff67a71179ad05b06a596c10c2e5c80f61b9d596151369cc4b67878ed7`.
+
+First-stage acceptance is screen and NCM stability with the new DTBO while
+`pinctrl-sm8750` remains unloaded. Check that `f100000.pinctrl` has no driver
+and the SPI controller still registers. Only after a stable first stage may
+the module be loaded manually over NCM for a second, separately observed
+probe. No touch firmware or pin output is selected by this image. If the
+first stage fails, stop and return to fastboot; the old working DTBO SHA256
+`26fe3551ddf82187e11d3c56ad5a936e980ef6889e37f5741d5610b422078a7a`
+is retained in `debian-piano/out/adsp-m1/rollback-spi-good.dtbo.img`.

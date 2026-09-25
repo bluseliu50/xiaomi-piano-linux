@@ -57,6 +57,9 @@ mkdir -p "$KERNEL_OUT" "$OUTPUT_DIR" "$FIRMWARE_DIR/qcom/sm8750"
 if [ ! -s "$KERNEL_OUT/.config" ]; then
     make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" piano_defconfig
 fi
+"$KERNEL/scripts/config" --file "$KERNEL_OUT/.config" \
+    --module CONFIG_PINCTRL_SM8750
+make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" olddefconfig
 
 echo "build-adsp-test-image: building kernel modules and Image"
 make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" -j"$JOBS" Image modules
@@ -83,6 +86,7 @@ for rel in \
     net/qrtr/qrtr-smd.ko \
     drivers/dma/qcom/gpi.ko \
     drivers/spi/spi-geni-qcom.ko \
+    drivers/pinctrl/qcom/pinctrl-sm8750.ko \
     drivers/input/touchscreen/nt36532e/nt36532e_ts.ko; do
     path="$KERNEL_OUT/$rel"
     [ -s "$path" ] || die "required module missing: $path"
