@@ -70,6 +70,7 @@ KVER=$(sed -n 's/^#define UTS_RELEASE \"\(.*\)\"$/\1/p' \
 
 # qcom_q6v5_pas is a module. Keep its provider closure explicit and small;
 # depmod in build-initramfs.sh resolves the inter-module ordering.
+# Exclude pinctrl-sm8750: loading it rebooted piano during the isolated trial.
 MODULES=()
 for rel in \
     drivers/remoteproc/qcom_common.ko \
@@ -86,7 +87,6 @@ for rel in \
     net/qrtr/qrtr-smd.ko \
     drivers/dma/qcom/gpi.ko \
     drivers/spi/spi-geni-qcom.ko \
-    drivers/pinctrl/qcom/pinctrl-sm8750.ko \
     drivers/input/touchscreen/nt36532e/nt36532e_ts.ko; do
     path="$KERNEL_OUT/$rel"
     [ -s "$path" ] || die "required module missing: $path"

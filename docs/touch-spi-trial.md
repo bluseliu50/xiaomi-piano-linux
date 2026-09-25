@@ -95,7 +95,7 @@ its DTBO is byte-identical to the last tested one. This is source-level safety
 work only: firmware selection remains disabled, and the new boot image has not
 been started on the device.
 
-## Controlled TLMM node isolation (not yet boot-tested)
+## Controlled TLMM node isolation (device result)
 
 The next image set separates DTBO parsing from the mainline TLMM driver probe.
 Kernel commit `6b8e1fa55` makes `CONFIG_PINCTRL_SM8750=m`; the build stages
@@ -107,11 +107,52 @@ consumer. Its SHA256 is exactly the earlier failed DTBO hash,
 The matching RAM-boot image SHA256 is
 `03e45fff67a71179ad05b06a596c10c2e5c80f61b9d596151369cc4b67878ed7`.
 
-First-stage acceptance is screen and NCM stability with the new DTBO while
-`pinctrl-sm8750` remains unloaded. Check that `f100000.pinctrl` has no driver
-and the SPI controller still registers. Only after a stable first stage may
-the module be loaded manually over NCM for a second, separately observed
-probe. No touch firmware or pin output is selected by this image. If the
-first stage fails, stop and return to fastboot; the old working DTBO SHA256
+The first stage passed: the operator confirmed sustained console display,
+NCM answered 3/3 pings, `f100000.pinctrl` was present without a driver, and
+`pinctrl_sm8750` was absent from `/sys/module`. The kernel release was
+`7.2.6-00028-g6b8e1fa55d83`.
+
+The second stage failed immediately after `modprobe pinctrl-sm8750`: the
+telnet command never returned, the panel went black, NCM disappeared, and
+the operator reported a device reboot. The operator returned to fastboot;
+`current-slot` remained `b` and `slot-unbootable:b` was `no`. ABL returned
+`FAILNo such section` for both `oem lkmsg` and `oem lpmsg`. A subsequent RAM
+boot of the same image worked again with the module unloaded, but mounted
+pstore was empty. The exact fault within `msm_pinctrl_probe()` is unknown.
+The operator confirmed normal display again after this RAM boot.
+Do not reload this module on piano without a way to capture a crash trace.
+No touch firmware or GPIO output was selected during either stage.
+
+Subsequent trial builds exclude `pinctrl-sm8750.ko` from the initramfs to
+prevent accidental repetition, and the touch test reports this known failure.
+The kernel configuration remains modular, preserving the isolation experiment
+in history. This packaging change does not resolve the touch dependencies.
+
+Source review found a concrete omission in the new TLMM node:
+`refer/MiCode_piano/kernel_devicetree/qcom/sun.dtsi` declares
+`qcom,gpios-reserved = <36 37 38 39 74 48 49 50 51>`. The saved merged device
+tree has the same list. The new node now expresses it using the mainline
+binding's `gpio-reserved-ranges = <36 4>, <48 4>, <74 1>`.
+In `linux-piano/drivers/gpio/gpiolib.c`, registration initializes the valid
+mask before calling `get_direction()` for each valid GPIO; the Qualcomm
+callback reads its control register. The previous unmasked node could thus
+read these reserved GPIOs even without consumers. This is a plausible cause
+of the reboot, not a confirmed diagnosis. The corrected overlay remains
+untested on hardware, and the TLMM module stays excluded pending a controlled
+diagnostic plan.
+
+Validation: the all-core build (`--jobs 32`) completed, the compiled overlay's
+reserved GPIO set matches the MiCode source exactly, and the generated
+initramfs contains the failure diagnostic but no `pinctrl-sm8750.ko`.
+Shell syntax, shellcheck for the build entry point, and whitespace checks
+passed. Debian commit `c84d456` produces the corrected DTBO with SHA256
+`24f0695b18fde2a01dab977903c0243b57b0d67cc06173dadc6dedacf9ad4459`;
+the matching boot image SHA256 is
+`fe1c2388e47944b5a24255526a85452e758e8c30b53841b9b55c36e418a76756`.
+Artifacts are in `debian-piano/out/adsp-m1/`; neither was deployed during
+this source review. All three repositories remain descendants of their
+`milestone-1` tags.
+
+The old working DTBO SHA256
 `26fe3551ddf82187e11d3c56ad5a936e980ef6889e37f5741d5610b422078a7a`
 is retained in `debian-piano/out/adsp-m1/rollback-spi-good.dtbo.img`.
