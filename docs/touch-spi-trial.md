@@ -37,7 +37,7 @@ It does not select a touch firmware image or enable the DRM panel driver.
 The next touch step requires a separately reviewed panel/pinctrl plan; the
 presence of `spi0.0` alone is not evidence of functional touch input.
 
-The current trial manifest records `boot.img` SHA256
+The last on-device-tested image records `boot.img` SHA256
 `de649e233b15c98ae014086e5014edb46529adebc713a094cb72cab215028112` and
 `dtbo.img` SHA256
 `26fe3551ddf82187e11d3c56ad5a936e980ef6889e37f5741d5610b422078a7a`.
@@ -60,9 +60,37 @@ The follow-up image booted with NCM reachability (3/3 ICMP replies); the
 operator confirmed normal console display, and the device remained reachable
 after approximately two minutes. `piano-touch-test` again found `a88000.spi`
 bound to `geni_spi` and `spi0.0` with modalias `spi:NVT-ts-spi`. Its
-`devices_deferred` output names the exact
-touch blockers: `spi0.0` waits for the downstream DSI panel node, while
-`soc:touch_avdd_vreg` cannot obtain its GPIO. The touch driver also waits for
+`devices_deferred` output names the immediate touch blocker: `spi0.0` waits
+for the downstream DSI panel node. Separately, `soc:touch_avdd_vreg` cannot
+obtain GPIO114, but the stock touch node does not reference that regulator as
+a supply, so its effect on touch power is not established. The driver waits for
 `panel_on` before checking the chip ID. Forcing probe while the panel and GPIO
 providers are unresolved would reach chip I/O with unknown power state; that
 is not part of this trial.
+
+## MiCode P81 touch source review
+
+The piano device tree includes
+`refer/MiCode_piano/kernel_devicetree/qcom/piano-xiaomi-touch-pinctrl.dtsi`.
+Its touch node uses GPIO162 for IRQ, GPIO100 for panel identification, and
+GPIO40-43 for QUP1 SE2 SPI. The P81 driver in
+`refer/MiCode_piano/vendor_xiaomi_proprietary_touch-driver/p81/nt36532/`
+reads GPIO100 as an input: 0 selects the CSOT firmware, 1 selects BOE. It
+does not request the optional reset GPIO (`NVT_TOUCH_SUPPORT_HW_RST=0`). The
+P81 and P82 `nt36xxx.c` files are byte-identical in this reference snapshot.
+
+The current port does not read GPIO100 or select either firmware, and the
+trial DTBO deliberately supplies no `firmware-name`. This prevents an
+unverified panel-family download. The stock touch `panel` property contains
+three candidate phandles, whereas `drm_panel_add_follower()` in this kernel
+resolves only index 0. None of those stock downstream panel nodes is a DRM
+panel in the running simpledrm system. A future panel integration must first
+identify the actual panel and give the follower exactly that panel reference.
+
+In the ported driver, the engineering reset is an SPI write. Kernel commit
+`3182dd3f6` moves it after the DRM panel-prepared check and propagates
+follower registration errors. The 32-core build passed and produced boot
+SHA256 `f5153a424a708a39b56f1a063e2321d2393dbcfc3774a330ac759023bc7b0d14`;
+its DTBO is byte-identical to the last tested one. This is source-level safety
+work only: firmware selection remains disabled, and the new boot image has not
+been started on the device.
