@@ -81,6 +81,7 @@ for rel in \
     drivers/soc/qcom/qmi_helpers.ko \
     net/qrtr/qrtr.ko \
     net/qrtr/qrtr-smd.ko \
+    drivers/dma/qcom/gpi.ko \
     drivers/spi/spi-geni-qcom.ko \
     drivers/input/touchscreen/nt36532e/nt36532e_ts.ko; do
     path="$KERNEL_OUT/$rel"
