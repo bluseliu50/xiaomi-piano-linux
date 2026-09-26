@@ -66,6 +66,31 @@ read `/run/pstore-prev/console-ramoops-0`.
 Rollback: `debian-piano/out/adsp-m1/rollback-spi-good.dtbo.img` or the
 milestone-1 pair in `debian-piano/out/test-image/`.
 
-## Results
+## Results (device session 2026-09-26)
 
-(filled in after the device session)
+Image: kernel `7.2.6-00031-g7ec7e9a4bf12`, touch-v2 dtbo.
+
+| Stage | Result |
+|---|---|
+| 1 TLMM probe (`pinctrl-sm8750`) | **passes** with `gpio-reserved-ranges`; no reset, pin state unchanged. The earlier reboot was the missing secure-GPIO list |
+| 2 GPI + GENI SPI | binds; GPIO40-43 switch to `qup1_se2`, 6 mA; SE2 runs in GPI DMA mode (dma1chan0/1) |
+| 3 first SPI transfer | **reset the SoC** — see below. With the SMMU fix: chip ID `0e 00 04 32 65 03` (NT36532, cascade), lcd-id 1 → **BOE** panel, `fw_boe.bin` (0x13) downloaded in 101 ms, poll info frame length 5192, 60x40 sensor, PID 0x59B0 |
+| 4 THP frames | ~120 frames/s, type 3 (60x40 mutual), all checksums valid, no read errors; idle max delta ≈ 15, finger ≈ 1000-1300 |
+| 5 uinput | two fingers tracked in separate slots; corners map to (125,185) and (3117,1994) on the 3200x2136 console |
+
+**SMMU root cause.** The stock apps SMMU (`qcom,qsmmu-v500`, 0x15000000) has
+no mainline driver in this setup, so it stays as ABL left it: enabled,
+`sCR0.USFCFG=1` (unmatched streams fault), stream matches only for ABL's own
+masters (0x60, 0x540, 0x800/2, USB 0x40, 0x480), each routed to a context bank
+with stage 1 off. QUP1 GPI DMA (stream 0xb6) had no match; its first transfer
+faulted and the SoC reset (no log survives: the reset is below the kernel).
+`piano-qup-smmu` adds matches for 0xb6 and 0xa3 routed like USB. This is a
+bring-up workaround; the proper fix is a mainline SMMU binding in the overlay
+(`qcom,sm8750-smmu-500`) with correct `iommus` for every DMA master, handled
+with the display handoff streams in mind.
+
+**Orientation.** Landscape console: sensor column → screen x, sensor row →
+screen y reversed (default in `piano-touch-view`).
+
+pstore did not keep a log across these resets (the region was empty after
+reboot), so it cannot be relied on for SoC-level resets.
