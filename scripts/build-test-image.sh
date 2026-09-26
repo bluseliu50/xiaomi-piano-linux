@@ -84,10 +84,11 @@ check_repo "$DEBIAN" main
 BUSYBOX="$TOOLS/busybox"
 DROPBEAR_TREE="$TOOLS/dropbear/tree"
 SYSROOT="$TOOLS/musl-sysroot"
-[ -x "$BUSYBOX/busybox" ] && [ -x "$DROPBEAR_TREE/usr/sbin/dropbear" ] \
-    && [ -f "$SYSROOT/usr/lib/libclang_rt.builtins-aarch64.a" ] \
-    || die "no staged arm64 tools in $TOOLS
+for f in "$BUSYBOX/busybox" "$DROPBEAR_TREE/usr/sbin/dropbear" \
+         "$SYSROOT/usr/lib/libclang_rt.builtins-aarch64.a"; do
+    [ -e "$f" ] || die "no staged arm64 tools in $TOOLS ($f missing)
   run: debian-piano/scripts/fetch-arm64-tools.sh --output-dir $TOOLS"
+done
 [ -d "$TOUCH_FIRMWARE_SRC" ] || die "missing extracted touch firmware: $TOUCH_FIRMWARE_SRC"
 
 echo "build-test-image: linux-piano $(git -C "$KERNEL" rev-parse --short HEAD)," \
