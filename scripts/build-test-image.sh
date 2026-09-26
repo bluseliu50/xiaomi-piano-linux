@@ -78,8 +78,8 @@ check_repo() { # check_repo DIR BRANCH
     [ -z "$(git -C "$1" status --porcelain)" ] \
         || die "$(basename "$1") has uncommitted changes — commit or stash first"
 }
-check_repo "$KERNEL" piano/test-bringup
-check_repo "$DEBIAN" main
+check_repo "$KERNEL" piano/wlanbt
+check_repo "$DEBIAN" bp/wlanbt
 
 BUSYBOX="$TOOLS/busybox"
 DROPBEAR_TREE="$TOOLS/dropbear/tree"
@@ -126,20 +126,33 @@ KVER=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"$/\1/p' \
 [ -n "$KVER" ] || die "cannot determine kernel release"
 case "$KVER" in *dirty*) die "kernel release $KVER is dirty" ;; esac
 
-# --- touch module closure; depmod in build-initramfs.sh orders it ------------
+# --- module closure (touch + WLAN/BT ladder), resolved via depmod -------------
+# modules_install + modprobe --show-depends walks the real dependency graph,
+# so no hand-maintained .ko list can go stale (the 09-21 lesson: a missing
+# transitive dep silently killed pcie0).
+MOD_INSTALL="$KERNEL_OUT/mod-closure"
+rm -rf "$MOD_INSTALL"
+make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" -j"$JOBS" modules_install \
+     INSTALL_MOD_PATH="$MOD_INSTALL" INSTALL_MOD_STRIP=1 >/dev/null \
+  || die "modules_install failed"
+
 MODULES=()
-for rel in \
-    drivers/pinctrl/qcom/pinctrl-sm8750.ko \
-    drivers/dma/qcom/gpi.ko \
-    drivers/spi/spi-geni-qcom.ko \
-    drivers/input/touchscreen/nt36532e/nt36532e_ts.ko \
-    drivers/input/misc/uinput.ko; do
-    path="$KERNEL_OUT/$rel"
-    [ -s "$path" ] || die "required module missing: $path"
-    [ "$(modinfo -F vermagic "$path")" = "$KVER SMP preempt mod_unload aarch64" ] \
-        || die "stale vermagic in $path"
-    MODULES+=("$path")
-done
+while read -r ko; do
+    [ -s "$ko" ] || die "closure module missing: $ko"
+    [ "$(modinfo -F vermagic "$ko")" = "$KVER SMP preempt mod_unload aarch64" ] \
+        || die "stale vermagic in $ko"
+    MODULES+=("$ko")
+done < <(
+    for mod in pinctrl_sm8750 nt36532e_ts uinput \
+               pwrseq_qcom_wcn pci_pwrctrl_pwrseq pcie_qcom \
+               phy_qcom_qmp_pcie ath12k_wifi7 hci_uart; do
+        modprobe -S "$KVER" -d "$MOD_INSTALL" --show-depends "$mod" 2>/dev/null \
+            || die "cannot resolve module closure for $mod"
+    done | awk '$1 == "insmod" {print $2}' | sort -u
+)
+[ "${#MODULES[@]}" -ge 14 ] \
+    || die "module closure suspiciously small (${#MODULES[@]} modules)"
+echo "build-test-image: module closure = ${#MODULES[@]} modules"
 
 # --- firmware + helper staging (inside the ignored kernel out dir) ------------
 rm -rf "$STAGE"
@@ -148,6 +161,18 @@ for name in novatek_nt36532_piano_fw_csot.bin novatek_nt36532_piano_fw_boe.bin; 
     [ -s "$TOUCH_FIRMWARE_SRC/$name" ] || die "missing touch firmware: $TOUCH_FIRMWARE_SRC/$name"
     cp -a "$TOUCH_FIRMWARE_SRC/$name" "$STAGE/firmware/novatek/"
 done
+
+# WLAN/BT combo firmware: ath12k/WCN7850 (amss/m3/board-2/bdwlan) and the
+# qca hmt* HCI firmware/nvm set, verified against their SHA256SUMS manifest.
+WLANBT_FIRMWARE="$WORKSPACE/local/firmware/wifi-bt"
+[ -d "$WLANBT_FIRMWARE/ath12k/WCN7850/hw2.0" ] \
+    || die "missing WLAN firmware: $WLANBT_FIRMWARE/ath12k/WCN7850/hw2.0"
+[ -s "$WLANBT_FIRMWARE/qca/hmtbtfw20.tlv" ] \
+    || die "missing BT firmware: $WLANBT_FIRMWARE/qca/hmtbtfw20.tlv"
+( cd "$WLANBT_FIRMWARE" && sha256sum --check --quiet SHA256SUMS ) \
+    || die "wifi-bt firmware fails its SHA256SUMS manifest"
+cp -a "$WLANBT_FIRMWARE/ath12k" "$STAGE/firmware/"
+cp -a "$WLANBT_FIRMWARE/qca" "$STAGE/firmware/"
 make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" headers_install \
     INSTALL_HDR_PATH="$STAGE/uapi"
 "$DEBIAN/scripts/build-touch-view.sh" --uapi "$STAGE/uapi" \
@@ -183,7 +208,7 @@ make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" -j"$JOBS" Image
 
 "$DEBIAN/scripts/build-test-bootimg.sh" \
     --kernel-dir "$KERNEL_OUT" --output-dir "$OUTPUT_DIR" \
-    --dtbo-source "$DEBIAN/boot/dtbo-piano-touch-v2.dts"
+    --dtbo-source "$DEBIAN/boot/dtbo-piano-wlanbt.dts"
 
 {
     echo
