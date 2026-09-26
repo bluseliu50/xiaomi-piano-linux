@@ -1,9 +1,12 @@
 # Piano touch bring-up, iteration 2 (2026-09-26)
 
-Follows `docs/touch-spi-trial.md`. Branches: umbrella `piano/touch-bringup`,
-`linux-piano` `piano/touch-bringup`, `debian-piano` `bp/touch-bringup`.
-Build: `scripts/build-touch-test-image.sh --jobs 32` →
-`debian-piano/out/touch-v2/{boot.img,dtbo.img,MANIFEST.txt}`.
+Follows `docs/touch-spi-trial.md`. Developed on `piano/touch-bringup`
+(umbrella, linux-piano) and `bp/touch-bringup` (debian-piano), then merged
+into the test-image lines (umbrella `main`, linux-piano `piano/test-bringup`,
+debian-piano `main`); tag `milestone-touch`.
+Build: `scripts/build-test-image.sh --jobs 32` →
+`debian-piano/out/test-image/{boot.img,dtbo.img,MANIFEST.txt}` (the only
+image set; the arm64 userland lives in umbrella `out/arm64-tools`).
 
 ## What the hardware needs (from the MiCode piano sources)
 
@@ -50,8 +53,8 @@ Host, device in fastboot:
 
 ```
 fastboot getvar current-slot        # must be b
-fastboot flash dtbo_b debian-piano/out/touch-v2/dtbo.img
-fastboot boot debian-piano/out/touch-v2/boot.img
+fastboot flash dtbo_b debian-piano/out/test-image/dtbo.img
+fastboot boot debian-piano/out/test-image/boot.img
 nc 10.42.0.2 23                     # busybox telnetd
 ```
 
@@ -63,8 +66,8 @@ If the device resets: hold Volume Down to land in fastboot directly (Android
 must not boot, or it overwrites ramoops), RAM-boot the same image again and
 read `/run/pstore-prev/console-ramoops-0`.
 
-Rollback: `debian-piano/out/adsp-m1/rollback-spi-good.dtbo.img` or the
-milestone-1 pair in `debian-piano/out/test-image/`.
+Rollback: the milestone-1 pair and the first tested touch pair are kept in
+umbrella `out/archive/` (`milestone-1-image/`, `touch-v2-tested/`).
 
 ## Results (device session 2026-09-26)
 

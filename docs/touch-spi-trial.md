@@ -1,5 +1,10 @@
 # Piano touch SPI trial (2026-09-25)
 
+> Historical record. Superseded by `docs/touch-bringup-v2.md`; the
+> `build-adsp-test-image.sh` entry point and the `debian-piano/out/adsp-m1/`
+> artifacts named below no longer exist (touch is part of
+> `scripts/build-test-image.sh`).
+
 This trial is on descendants of the `milestone-1` tag. The known-good tag and
 slot A were not modified. The trial builds from the workspace root with
 `./scripts/build-adsp-test-image.sh --jobs "$(nproc)"` and stages its images in
