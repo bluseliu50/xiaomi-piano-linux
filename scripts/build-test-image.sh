@@ -3,8 +3,7 @@
 # image, tying the two component repos together from the workspace root.
 #
 # Usage:
-#   scripts/build-test-image.sh [--jobs N] [--kernel-out DIR]
-#       [--output-dir DIR] [--skip-kernel-build]
+#   scripts/build-test-image.sh [--jobs N]
 #
 # Why this lives in the umbrella repo: the test image consumes artifacts
 # from BOTH component repos (linux-piano kernel outputs + debian-piano
@@ -12,29 +11,35 @@
 # belongs here (scripts/), NOT inside linux-piano or hardcoded with
 # relative ../ paths inside debian-piano.
 #
-# Produces exactly THREE deliverables in --output-dir (packed and
-# round-trip-verified by debian-piano/scripts/build-test-bootimg.sh):
+# Produces exactly THREE deliverables in debian-piano/out/test-image/
+# (packed and round-trip-verified by debian-piano/scripts/build-test-bootimg.sh):
 #   boot.img  dtbo.img  MANIFEST.txt
 #
 # Steps:
-#   1. Refuses to run unless linux-piano is on piano/test-bringup (the
-#      branch this image is defined for) and the tree is clean.
-#   2. Builds the debug initramfs (busybox + telnetd NCM environment).
-#      Modules/firmware are deliberately NOT packed: ABL concatenates the
-#      CURRENT SLOT's stock vendor ramdisk after ours, which already
-#      carries the flat .ko set (runbook §7.3).
-#   3. Points CONFIG_INITRAMFS_SOURCE at it in the PRESERVED out/.config
-#      and builds Image. An existing out/.config is NEVER regenerated:
-#      it carries hand-accumulated boot-critical options (golden copy:
-#      linux-piano/out/usb31-golden.config; defconfig pinning: branch
-#      piano/config-boot-criticals). A silent `make piano_defconfig`
-#      over it once produced gray-screen kernels for a whole evening.
-#   4. Runs debian-piano/scripts/build-test-bootimg.sh.
+#   1. Refuses to run unless linux-piano is on piano/test-bringup and
+#      debian-piano on main, both clean.
+#   2. Configures the kernel from the committed piano_defconfig in
+#      linux-piano/out/test-image (boot-critical options are pinned there
+#      and gated below), regenerates the release string, then builds Image
+#      and modules. Every staged module must carry that release (vermagic).
+#   3. Builds the debug initramfs: busybox/telnetd NCM environment, the
+#      touch module closure (TLMM, GPI, GENI SPI, NT36532, uinput) under
+#      /lib/modules/<release>/, both piano touch firmware blobs, the test
+#      scripts and the static piano-touch-view helper. Nothing touch
+#      related is loaded at boot; piano-tests / piano-touch-test do that.
+#   4. Embeds it via CONFIG_INITRAMFS_SOURCE, rebuilds Image and packs the
+#      image set with the touch overlay (boot/dtbo-piano-touch-v2.dts).
+#
+# Host tools: clang/lld (kernel and helper), dtc, python3, cpio, depmod,
+# modinfo, plus the arm64 userland staged by
+#   debian-piano/scripts/fetch-arm64-tools.sh --output-dir out/arm64-tools
+# (umbrella out/, so debian-piano/out holds nothing but the image set) and
+# the touch firmware extracted to local/firmware/odm/firmware/.
 
 set -euo pipefail
 
 usage() {
-    sed -n '2,27p' "$0"; exit 2
+    sed -n '2,36p' "$0"; exit 2
 }
 
 die() {
@@ -43,17 +48,11 @@ die() {
 }
 
 JOBS=$(nproc)
-KERNEL_OUT=""
-OUTPUT_DIR=""
-SKIP_KERNEL=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --jobs)              JOBS=${2-}; shift 2 ;;
-        --kernel-out)        KERNEL_OUT=${2-}; shift 2 ;;
-        --output-dir)        OUTPUT_DIR=${2-}; shift 2 ;;
-        --skip-kernel-build) SKIP_KERNEL=1; shift ;;
-        -h|--help)           usage ;;
+        --jobs)    JOBS=${2-}; shift 2 ;;
+        -h|--help) usage ;;
         *) die "unknown option: $1" ;;
     esac
 done
@@ -64,92 +63,138 @@ case "$JOBS" in ''|*[!0-9]*) die "--jobs must be a positive integer (got '$JOBS'
 WORKSPACE=$(cd "$(dirname "$0")/.." && pwd)
 KERNEL="$WORKSPACE/linux-piano"
 DEBIAN="$WORKSPACE/debian-piano"
-REQUIRED_BRANCH=piano/test-bringup
+KERNEL_OUT="$KERNEL/out/test-image"
+OUTPUT_DIR="$DEBIAN/out/test-image"
+STAGE="$KERNEL_OUT/stage"
+TOOLS="$WORKSPACE/out/arm64-tools"
+TOUCH_FIRMWARE_SRC="$WORKSPACE/local/firmware/odm/firmware"
 
-[ -d "$KERNEL/.git" ] || [ -f "$KERNEL/.git" ] \
-    || die "linux-piano submodule not found at $KERNEL (git submodule update --init)"
-[ -d "$DEBIAN/.git" ] || [ -f "$DEBIAN/.git" ] \
-    || die "debian-piano submodule not found at $DEBIAN"
-[ -x "$DEBIAN/scripts/build-test-bootimg.sh" ] \
-    || die "$DEBIAN does not carry build-test-bootimg.sh (branch too old?)"
+check_repo() { # check_repo DIR BRANCH
+    local branch
+    [ -e "$1/.git" ] || die "$1 not found (git submodule update --init)"
+    branch=$(git -C "$1" rev-parse --abbrev-ref HEAD)
+    [ "$branch" = "$2" ] || die "$(basename "$1") is on '$branch'; this image requires $2
+(booting another branch would silently change what is being tested)"
+    [ -z "$(git -C "$1" status --porcelain)" ] \
+        || die "$(basename "$1") has uncommitted changes — commit or stash first"
+}
+check_repo "$KERNEL" piano/test-bringup
+check_repo "$DEBIAN" main
 
-BRANCH=$(git -C "$KERNEL" rev-parse --abbrev-ref HEAD)
-COMMIT=$(git -C "$KERNEL" rev-parse --short HEAD)
-if [ "$BRANCH" != "$REQUIRED_BRANCH" ]; then
-    die "linux-piano is on '$BRANCH' ($COMMIT); this image requires $REQUIRED_BRANCH
-      cd linux-piano && git checkout $REQUIRED_BRANCH
-(booting another branch's kernel would silently change what is being tested)"
-fi
-if [ -n "$(git -C "$KERNEL" status --porcelain)" ]; then
-    die "linux-piano has uncommitted changes — commit or stash first"
-fi
+BUSYBOX="$TOOLS/busybox"
+DROPBEAR_TREE="$TOOLS/dropbear/tree"
+SYSROOT="$TOOLS/musl-sysroot"
+for f in "$BUSYBOX/busybox" "$DROPBEAR_TREE/usr/sbin/dropbear" \
+         "$SYSROOT/usr/lib/libclang_rt.builtins-aarch64.a"; do
+    [ -e "$f" ] || die "no staged arm64 tools in $TOOLS ($f missing)
+  run: debian-piano/scripts/fetch-arm64-tools.sh --output-dir $TOOLS"
+done
+[ -d "$TOUCH_FIRMWARE_SRC" ] || die "missing extracted touch firmware: $TOUCH_FIRMWARE_SRC"
 
-KERNEL_OUT=${KERNEL_OUT:-$KERNEL/out}
-KERNEL_OUT=$(realpath -m "$KERNEL_OUT")
-OUTPUT_DIR=${OUTPUT_DIR:-$DEBIAN/out/test-image}
-INITRAMFS="$KERNEL_OUT/initramfs.cpio.gz"
+echo "build-test-image: linux-piano $(git -C "$KERNEL" rev-parse --short HEAD)," \
+     "debian-piano $(git -C "$DEBIAN" rev-parse --short HEAD), out=$KERNEL_OUT"
 
-echo "build-test-image: kernel branch=$BRANCH commit=$COMMIT out=$KERNEL_OUT"
-
-# --- kernel config: PRESERVE an existing out/.config --------------------------
-# Only generate when absent; the critical-option gate below then fails
-# loudly instead of silently shipping a crippled kernel.
-if [ "$SKIP_KERNEL" != 1 ] && [ ! -s "$KERNEL_OUT/.config" ]; then
-    echo "build-test-image: no out/.config found — generating piano_defconfig (first run)"
-    make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" piano_defconfig
-fi
-
-if [ "$SKIP_KERNEL" != 1 ]; then
-    # --- debug initramfs -------------------------------------------------------
-    TOOLS="$DEBIAN/out/arm64-tools"
-    BUSYBOX="$TOOLS/busybox"
-    DROPBEAR_TREE="$TOOLS/dropbear/tree"
-    [ -x "$BUSYBOX/busybox" ] \
-        || die "no staged busybox at $BUSYBOX (run debian-piano/scripts/fetch-arm64-tools.sh)"
-    [ -x "$DROPBEAR_TREE/usr/sbin/dropbear" ] \
-        || die "no staged dropbear tree at $DROPBEAR_TREE (run fetch-arm64-tools.sh)"
-
-    echo "build-test-image: building initramfs -> $INITRAMFS"
-    "$DEBIAN/scripts/build-initramfs.sh" \
-        --busybox "$BUSYBOX" --dropbear-tree "$DROPBEAR_TREE" \
-        --output "$INITRAMFS" --compress gzip
-
-    # --- embed it into the kernel image ----------------------------------------
-    echo "build-test-image: embedding initramfs via CONFIG_INITRAMFS_SOURCE"
-    "$KERNEL/scripts/config" --file "$KERNEL_OUT/.config" \
-        --set-str CONFIG_INITRAMFS_SOURCE "$INITRAMFS"
-    # NOTE: no olddefconfig on purpose — it can silently drop the
-    # FONT_TER16x32 choice; the config is a complete valid config as-is.
-fi
+# --- kernel: committed defconfig, fresh release string ------------------------
+mkdir -p "$KERNEL_OUT"
+make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" piano_defconfig
+rm -f "$KERNEL_OUT/include/config/kernel.release" \
+      "$KERNEL_OUT/include/generated/utsrelease.h" "$KERNEL_OUT/.version"
+make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" prepare
+find "$KERNEL_OUT" \( -name '*.mod.c' -o -name '*.ko' \) -delete
 
 # --- critical-option gate (the 09-22 lesson, now enforced) ---------------------
-if [ "$SKIP_KERNEL" != 1 ]; then
-    absent=()
-    for pair in CONFIG_CMDLINE_FORCE=y CONFIG_DRM_SIMPLEDRM=y \
-                CONFIG_FRAMEBUFFER_CONSOLE=y CONFIG_FONT_TER16x32=y \
-                CONFIG_SM_TCSRCC_8750=y; do
-        grep -qxF "$pair" "$KERNEL_OUT/.config" || absent+=("$pair")
-    done
-    grep -q '^CONFIG_INITRAMFS_SOURCE="' "$KERNEL_OUT/.config" \
-        || absent+=('CONFIG_INITRAMFS_SOURCE=<set>')
-    if [ "${#absent[@]}" -gt 0 ]; then
-        printf 'build-test-image: out/.config lost boot-critical options:\n' >&2
-        printf '  %s\n' "${absent[@]}" >&2
-        die "restore the golden config (linux-piano/out/usb31-golden.config) or merge branch piano/config-boot-criticals"
-    fi
+absent=()
+for pair in CONFIG_CMDLINE_FORCE=y CONFIG_DRM_SIMPLEDRM=y \
+            CONFIG_FRAMEBUFFER_CONSOLE=y CONFIG_FONT_TER16x32=y \
+            CONFIG_SM_TCSRCC_8750=y CONFIG_PSTORE_RAM=y \
+            CONFIG_PINCTRL_SM8750=m CONFIG_QCOM_GPI_DMA=m \
+            CONFIG_SPI_QCOM_GENI=m CONFIG_TOUCHSCREEN_NT36532E_SPI=m \
+            CONFIG_INPUT_UINPUT=m; do
+    grep -qxF "$pair" "$KERNEL_OUT/.config" || absent+=("$pair")
+done
+if [ "${#absent[@]}" -gt 0 ]; then
+    printf 'build-test-image: piano_defconfig lost required options:\n' >&2
+    printf '  %s\n' "${absent[@]}" >&2
+    die "fix arch/arm64/configs/piano_defconfig"
 fi
 
-if [ "$SKIP_KERNEL" != 1 ]; then
-    make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" -j"$JOBS" Image
-fi
+echo "build-test-image: building Image and modules (-j$JOBS)"
+make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" -j"$JOBS" Image modules
 
-for f in "$KERNEL_OUT/arch/arm64/boot/Image" \
-         "$KERNEL_OUT/include/generated/utsrelease.h"; do
-    [ -s "$f" ] || die "expected kernel artifact missing (build first?): $f"
+KVER=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"$/\1/p' \
+       "$KERNEL_OUT/include/generated/utsrelease.h")
+[ -n "$KVER" ] || die "cannot determine kernel release"
+case "$KVER" in *dirty*) die "kernel release $KVER is dirty" ;; esac
+
+# --- touch module closure; depmod in build-initramfs.sh orders it ------------
+MODULES=()
+for rel in \
+    drivers/pinctrl/qcom/pinctrl-sm8750.ko \
+    drivers/dma/qcom/gpi.ko \
+    drivers/spi/spi-geni-qcom.ko \
+    drivers/input/touchscreen/nt36532e/nt36532e_ts.ko \
+    drivers/input/misc/uinput.ko; do
+    path="$KERNEL_OUT/$rel"
+    [ -s "$path" ] || die "required module missing: $path"
+    [ "$(modinfo -F vermagic "$path")" = "$KVER SMP preempt mod_unload aarch64" ] \
+        || die "stale vermagic in $path"
+    MODULES+=("$path")
 done
 
+# --- firmware + helper staging (inside the ignored kernel out dir) ------------
+rm -rf "$STAGE"
+mkdir -p "$STAGE/firmware/novatek"
+for name in novatek_nt36532_piano_fw_csot.bin novatek_nt36532_piano_fw_boe.bin; do
+    [ -s "$TOUCH_FIRMWARE_SRC/$name" ] || die "missing touch firmware: $TOUCH_FIRMWARE_SRC/$name"
+    cp -a "$TOUCH_FIRMWARE_SRC/$name" "$STAGE/firmware/novatek/"
+done
+make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" headers_install \
+    INSTALL_HDR_PATH="$STAGE/uapi"
+"$DEBIAN/scripts/build-touch-view.sh" --uapi "$STAGE/uapi" \
+    --sysroot "$SYSROOT" --output "$STAGE/piano-touch-view"
+
+# --- debug initramfs -----------------------------------------------------------
+INITRAMFS="$KERNEL_OUT/initramfs.cpio.gz"
+echo "build-test-image: building initramfs -> $INITRAMFS"
+INITRAMFS_ARGS=(
+    "$DEBIAN/scripts/build-initramfs.sh"
+    --busybox "$BUSYBOX" --dropbear-tree "$DROPBEAR_TREE"
+    --output "$INITRAMFS" --kernel-version "$KVER"
+    --firmware-dir "$STAGE/firmware" --touch-view "$STAGE/piano-touch-view"
+    --compress gzip
+)
+for module in "${MODULES[@]}"; do
+    INITRAMFS_ARGS+=(--module "$module")
+done
+"${INITRAMFS_ARGS[@]}"
+
+# --- embed it into the kernel image ----------------------------------------------
+"$KERNEL/scripts/config" --file "$KERNEL_OUT/.config" \
+    --set-str CONFIG_INITRAMFS_SOURCE "$INITRAMFS"
+# the new INITRAMFS_* sub-options must get their defaults non-interactively
+make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" olddefconfig
+for pair in CONFIG_CMDLINE_FORCE=y CONFIG_FONT_TER16x32=y; do
+    grep -qxF "$pair" "$KERNEL_OUT/.config" || die "olddefconfig dropped $pair"
+done
+make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" -j"$JOBS" Image
+[ "$(sed -n 's/^#define UTS_RELEASE "\(.*\)"$/\1/p' \
+     "$KERNEL_OUT/include/generated/utsrelease.h")" = "$KVER" ] \
+    || die "kernel release changed during the final Image build"
+
 "$DEBIAN/scripts/build-test-bootimg.sh" \
-    --kernel-dir "$KERNEL_OUT" --output-dir "$OUTPUT_DIR"
+    --kernel-dir "$KERNEL_OUT" --output-dir "$OUTPUT_DIR" \
+    --dtbo-source "$DEBIAN/boot/dtbo-piano-touch-v2.dts"
+
+{
+    echo
+    echo "sources:"
+    echo "  umbrella     $(git -C "$WORKSPACE" rev-parse HEAD)"
+    echo "  linux-piano  $(git -C "$KERNEL" rev-parse HEAD) ($KVER)"
+    echo "  debian-piano $(git -C "$DEBIAN" rev-parse HEAD)"
+    echo
+    echo "on the device (telnet 10.42.0.2 23): piano-tests; touch = menu 1"
+    echo "  (piano-touch-test: TLMM -> SPI -> NT36532 firmware -> 30 s draw test)"
+} >> "$OUTPUT_DIR/MANIFEST.txt"
 
 echo
 echo "build-test-image: complete. Deliverables (RAM boot; only dtbo_b is flashed):"

@@ -137,34 +137,23 @@ image is prepared to bring up on first boot, and where it may not:
 ## 6. Rebuild / customize
 
 One command from the workspace root (ties linux-piano + debian-piano +
-local/ together; refuses to build from any kernel branch other than
-`piano/test-bringup` and refuses a dirty kernel tree):
+local/ together; refuses to build unless linux-piano is on
+`piano/test-bringup` and debian-piano on `main`, both clean):
 
 ```
-scripts/build-test-image.sh [--root-password 'x']      # '' = press-enter login
-                             [--authorized-keys ~/.ssh/id_ed25519.pub]
-                             [--jobs N] [--kernel-out DIR] [--output-dir DIR]
+debian-piano/scripts/fetch-arm64-tools.sh --output-dir out/arm64-tools   # once
+scripts/build-test-image.sh --jobs "$(nproc)"
 ```
 
-It builds the kernel into `linux-piano/out` (unless
-`--skip-kernel-build`), stages the arm64 userland on demand, then runs
-the debian-piano packer, which produces and round-trip-verifies the five
-image variants into `debian-piano/out/test-image/` (MANIFEST.txt lists
-hashes, parameters and the boot ladder).
-
-Internals (component repos, reusable on their own):
-
-```
-debian-piano/scripts/fetch-arm64-tools.sh      # static busybox + dropbear tree
-debian-piano/scripts/build-test-bootimg.sh \
-    --kernel-dir ../linux-piano/out \
-    --firmware-dir ../local/firmware \
-    --output-dir out/test-image
-```
-
-Kernel side: `linux-piano` branch `piano/test-bringup`
-(display pipeline + NT37801 panel + NT36532E SPI touch, panel-follower
-wired).
+It configures the kernel from `piano_defconfig` in
+`linux-piano/out/test-image` (boot-critical and touch options are gated),
+builds Image + modules, packs the debug initramfs (NCM/telnetd
+environment, touch module closure, touch firmware from
+`local/firmware/odm/firmware/`, test scripts, `piano-touch-view`), embeds
+it and writes exactly `boot.img`, `dtbo.img` (overlay
+`boot/dtbo-piano-touch-v2.dts`) and `MANIFEST.txt` into
+`debian-piano/out/test-image/`. Touch bring-up details:
+`docs/touch-bringup-v2.md`.
 
 ## 7. Measured boot contract (2026-09-22, on-device)
 
