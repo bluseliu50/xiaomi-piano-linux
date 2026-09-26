@@ -105,6 +105,7 @@ find "$KERNEL_OUT" \( -name '*.mod.c' -o -name '*.ko' \) -delete
 # --- critical-option gate (the 09-22 lesson, now enforced) ---------------------
 absent=()
 for pair in CONFIG_CMDLINE_FORCE=y CONFIG_DRM_SIMPLEDRM=y \
+            CONFIG_PCIE_QCOM=y CONFIG_PHY_QCOM_QMP_PCIE=m \
             CONFIG_FRAMEBUFFER_CONSOLE=y CONFIG_FONT_TER16x32=y \
             CONFIG_SM_TCSRCC_8750=y CONFIG_PSTORE_RAM=y \
             CONFIG_PINCTRL_SM8750=m CONFIG_QCOM_GPI_DMA=m \
@@ -129,12 +130,24 @@ case "$KVER" in *dirty*) die "kernel release $KVER is dirty" ;; esac
 # --- module closure (touch + WLAN/BT ladder), resolved via depmod -------------
 # modules_install + modprobe --show-depends walks the real dependency graph,
 # so no hand-maintained .ko list can go stale (the 09-21 lesson: a missing
-# transitive dep silently killed pcie0).
+# transitive dep silently killed pcie0).  pcie-qcom itself is a bool option
+# in this kernel (built-in): it stays inert because its probe defers until
+# the pci-pwrctrl-pwrseq module binds the wifi@0 pwrctrl device.
 MOD_INSTALL="$KERNEL_OUT/mod-closure"
+CLOSURE="$KERNEL_OUT/mod-closure.txt"
 rm -rf "$MOD_INSTALL"
 make -C "$KERNEL" ARCH=arm64 LLVM=1 O="$KERNEL_OUT" -j"$JOBS" modules_install \
      INSTALL_MOD_PATH="$MOD_INSTALL" INSTALL_MOD_STRIP=1 >/dev/null \
   || die "modules_install failed"
+
+: > "$CLOSURE"
+for mod in pinctrl_sm8750 nt36532e_ts uinput \
+           pwrseq_qcom_wcn pci_pwrctrl_pwrseq \
+           phy_qcom_qmp_pcie ath12k_wifi7 hci_uart; do
+    modprobe -S "$KVER" -d "$MOD_INSTALL" --show-depends "$mod" \
+        >> "$CLOSURE" 2>/dev/null \
+      || die "cannot resolve module closure for $mod (is it built?)"
+done
 
 MODULES=()
 while read -r ko; do
@@ -142,14 +155,7 @@ while read -r ko; do
     [ "$(modinfo -F vermagic "$ko")" = "$KVER SMP preempt mod_unload aarch64" ] \
         || die "stale vermagic in $ko"
     MODULES+=("$ko")
-done < <(
-    for mod in pinctrl_sm8750 nt36532e_ts uinput \
-               pwrseq_qcom_wcn pci_pwrctrl_pwrseq pcie_qcom \
-               phy_qcom_qmp_pcie ath12k_wifi7 hci_uart; do
-        modprobe -S "$KVER" -d "$MOD_INSTALL" --show-depends "$mod" 2>/dev/null \
-            || die "cannot resolve module closure for $mod"
-    done | awk '$1 == "insmod" {print $2}' | sort -u
-)
+done < <(awk '$1 == "insmod" {print $2}' "$CLOSURE" | sort -u)
 [ "${#MODULES[@]}" -ge 14 ] \
     || die "module closure suspiciously small (${#MODULES[@]} modules)"
 echo "build-test-image: module closure = ${#MODULES[@]} modules"
