@@ -192,7 +192,7 @@ INITRAMFS_ARGS=(
     --busybox "$BUSYBOX" --dropbear-tree "$DROPBEAR_TREE"
     --output "$INITRAMFS" --kernel-version "$KVER"
     --firmware-dir "$STAGE/firmware" --touch-view "$STAGE/piano-touch-view"
-    --compress gzip
+    --iw-tree "$TOOLS/iw/tree" \
 )
 for module in "${MODULES[@]}"; do
     INITRAMFS_ARGS+=(--module "$module")
